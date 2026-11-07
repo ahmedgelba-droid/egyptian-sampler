@@ -124,7 +124,6 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     : AudioProcessorEditor (&p), proc (p)
 {
     setLookAndFeel (&laf);
-    setSize (720, 442);
 
     // 12 fine-tune boxes
     static const char* names[12] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
@@ -248,6 +247,8 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     addAndMakeVisible (info);
 
     refreshGroups();
+
+    setSize (720, 442); // last, so resized() finds every component already created
 }
 
 NayAudioProcessorEditor::~NayAudioProcessorEditor()
@@ -367,6 +368,9 @@ void NayAudioProcessorEditor::paint (juce::Graphics& g)
 
 void NayAudioProcessorEditor::resized()
 {
+    if (boxes[11] == nullptr)
+        return;
+
     const int w = getWidth(), h = getHeight();
 
     // dark brushed-metal background
