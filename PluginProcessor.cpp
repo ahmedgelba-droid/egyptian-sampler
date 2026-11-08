@@ -894,6 +894,105 @@ void NayAudioProcessor::processPhaser (juce::AudioBuffer<float>& buffer)
     }
 }
 
+// Arpeggiator: turns the held notes into a stream of note on/off. Every note still goes through the
+// maqam tuning table, so the arpeggio stays in the maqam (quarter tones included).
+void NayAudioProcessor::runArp (const juce::MidiBuffer& in, juce::MidiBuffer& out, int n, double bpm)
+{
+    static const double beats[4] = { 1.0, 0.5, 1.0 / 3.0, 0.25 };
+    const double stepLen = juce::jmax (64.0, 60.0 / juce::jmax (20.0, bpm) * sr * beats[juce::jlimit (0, 3, pArpRate)]);
+
+    auto it = in.begin();
+    for (int s = 0; s < n; ++s)
+    {
+        while (it != in.end() && (*it).samplePosition <= s)
+        {
+            const auto m = (*it).getMessage();
+            ++it;
+
+            if (m.isNoteOn())
+            {
+                if (pArpHold && physDown == 0)
+                    arpNotes.clear();
+                ++physDown;
+
+                arpNotes.erase (std::remove_if (arpNotes.begin(), arpNotes.end(),
+                                                [&] (const ArpNote& a) { return a.note == m.getNoteNumber(); }), arpNotes.end());
+                arpNotes.push_back ({ m.getNoteNumber(), juce::jlimit (1, 127, (int) m.getVelocity()) });
+
+                if (arpNotes.size() == 1)
+                {
+                    stepCd = 0.0;
+                    arpIdx = 0;
+                }
+            }
+            else if (m.isNoteOff())
+            {
+                physDown = juce::jmax (0, physDown - 1);
+                if (! pArpHold)
+                    arpNotes.erase (std::remove_if (arpNotes.begin(), arpNotes.end(),
+                                                    [&] (const ArpNote& a) { return a.note == m.getNoteNumber(); }), arpNotes.end());
+
+                if (arpNotes.empty() && arpCur >= 0)
+                {
+                    out.addEvent (juce::MidiMessage::noteOff (1, arpCur), s);
+                    arpCur = -1;
+                }
+            }
+            else
+            {
+                out.addEvent (m, s);
+            }
+        }
+
+        if (arpCur >= 0 && (gateCd -= 1.0) <= 0.0)
+        {
+            out.addEvent (juce::MidiMessage::noteOff (1, arpCur), s);
+            arpCur = -1;
+        }
+
+        if (arpNotes.empty())
+        {
+            stepCd = 0.0;
+            continue;
+        }
+
+        if (stepCd <= 0.0)
+        {
+            if (arpCur >= 0)
+            {
+                out.addEvent (juce::MidiMessage::noteOff (1, arpCur), s);
+                arpCur = -1;
+            }
+
+            std::vector<ArpNote> base = arpNotes;
+            if (pArpMode != 4)
+                std::sort (base.begin(), base.end(), [] (const ArpNote& a, const ArpNote& b) { return a.note < b.note; });
+
+            std::vector<ArpNote> seq;
+            for (int o = 0; o < pArpOct; ++o)
+                for (const auto& bn : base)
+                    if (bn.note + 12 * o <= 127)
+                        seq.push_back ({ bn.note + 12 * o, bn.vel });
+
+            if (pArpMode == 1)
+                std::reverse (seq.begin(), seq.end());
+            else if (pArpMode == 2 && seq.size() > 2)
+                for (int k = (int) seq.size() - 2; k >= 1; --k)
+                    seq.push_back (seq[(size_t) k]);
+
+            if (! seq.empty())
+            {
+                const int idx = pArpMode == 3 ? rng.nextInt ((int) seq.size()) : (arpIdx++ % (int) seq.size());
+                out.addEvent (juce::MidiMessage::noteOn (1, seq[(size_t) idx].note, (juce::uint8) seq[(size_t) idx].vel), s);
+                arpCur = seq[(size_t) idx].note;
+                gateCd = stepLen * (double) pArpGate;
+            }
+            stepCd += stepLen;
+        }
+        stepCd -= 1.0;
+    }
+}
+
 void NayAudioProcessor::processDelay (juce::AudioBuffer<float>& buffer)
 {
     const int n = buffer.getNumSamples();
