@@ -34,7 +34,8 @@ struct NayVoice
     std::shared_ptr<NaySample> sa, sb;    // layer A / layer B sample
     juce::ADSR adsr;
     double posA = 0.0, posB = 0.0, pitch = 60.0, target = 60.0, vibPhase = 0.0;
-    float velGain = 1.0f, velFc = 18000.f, lp = 0.f;
+    float detune = 0.f;
+    float velGain = 1.0f, velFc = 18000.f, lp = 0.f, glideMs = 100.f;
     int note = -1;
     bool gate = false;
     juce::uint64 age = 0;
@@ -49,7 +50,10 @@ enum NayParam
     P_satOn, P_satDrive, P_satMix,
     P_wahOn, P_wahPos, P_wahRate, P_wahMix,
     P_phOn, P_phRate, P_phDepth, P_phMix,
-    P_chOn, P_chRate, P_chDepth, P_chMix,
+    P_velOn,
+    P_arpOn, P_arpMode, P_arpRate, P_arpOct, P_arpGate, P_arpHold,
+    P_portaOn, P_portaTime,
+    P_rrMode, P_rrAmount,
     P_count
 };
 
@@ -103,6 +107,31 @@ public:
     }
     juce::String getSampleInfo() const { return sampleInfo; }
 
+    // last incoming MIDI event (for the monitor strip). kind: 0 none, 1 note on, 2 note off, 3 CC, 4 pitch bend
+    void getMidiMonitor (int& kind, int& a, int& b, int& count) const { kind = monKind; a = monA; b = monB; count = monCount; }
+
+    float getBend() const { return bendNorm; }
+    float getModWheel() const { return modWheel; }
+    float getExpr() const { return expr; }
+
+    // ---- MIDI learn: right-click a control, then move a knob / pedal on your MIDI device ----
+    // target: a NayParam index, or -2 = the expression pedal CC itself, -1 = nothing
+    void setLearnTarget (int t) { learnTarget = (learnTarget.load() == t) ? -1 : t; }
+    int getLearnTarget() const { return learnTarget; }
+    void clearAssign (int t)
+    {
+        if (t == -2) { expCC = 11; return; }
+        for (auto& c : ccMap) if (c.load() == t) c = -1;
+    }
+    int getAssignedCC (int t) const
+    {
+        if (t == -2) return expCC;
+        for (int i = 0; i < 128; ++i) if (ccMap[i].load() == t) return i;
+        return -1;
+    }
+    void getLearnDone (int& cc, int& target, int& count) const { cc = doneCC; target = doneTarget; count = doneCount; }
+    juce::String getParamLabel (int i) const { return params[i] != nullptr ? params[i]->getName (32) : juce::String(); }   // -1..1, for the pitch-bend ribbon
+
     juce::AudioProcessorValueTreeState apvts;
 
 private:
@@ -111,7 +140,7 @@ private:
     static bool folderHasSamples (const juce::File& folder);
     static std::shared_ptr<const NayBank> loadBank (const juce::File& folder, const std::vector<NayZoneOv>& ov);
     static void autoZones (const NayBank& b);
-    static std::shared_ptr<NaySample> pickSample (const NayBank* b, int note, int vel);
+    std::shared_ptr<NaySample> pickSample (const NayBank* b, int note, int vel);
 
     void addGroup (const juce::String& name, const juce::String& path);
     void ensureLoaded (int index);
@@ -124,8 +153,9 @@ private:
     void processSaturation (juce::AudioBuffer<float>&);
     void processWah (juce::AudioBuffer<float>&);
     void processPhaser (juce::AudioBuffer<float>&);
-    void processChorus (juce::AudioBuffer<float>&);
+    void runArp (const juce::MidiBuffer& in, juce::MidiBuffer& out, int numSamples, double bpm);
     void applyVelocity (NayVoice&, int vel);
+    void applyVariation (NayVoice&);
     void processDelay (juce::AudioBuffer<float>&);
     void processReverb (juce::AudioBuffer<float>&);
     double noteTarget (int note) const;
@@ -160,7 +190,7 @@ private:
     std::vector<int> held;
     int heldVel[128] {};
     juce::uint64 ageCounter = 0;
-    float modWheel = 0.f, bendNorm = 0.f;
+    float modWheel = 0.f, bendNorm = 0.f, expr = 1.f, exprSm = 1.f;
     double sr = 44100.0;
 
     // effect state
@@ -169,12 +199,25 @@ private:
     double wahPhase = 0.0;
     float phX1[2][4] {}, phY1[2][4] {}, phFb[2] {};
     double phPhase = 0.0;
-    juce::AudioBuffer<float> chBuf;
-    int chWrite = 0;
-    double chPhase = 0.0;
-    float chLp[2] {};
-    bool pChOn = false;
-    float pChRate = 0.8f, pChDepth = 0.6f, pChMix = 0.7f;
+    struct ArpNote { int note, vel; };
+    std::vector<ArpNote> arpNotes;
+    int arpIdx = 0, arpCur = -1, physDown = 0;
+    double stepCd = 0.0, gateCd = 0.0;
+    bool arpWasOn = false, pArpOn = false, pArpHold = false;
+    int pArpMode = 0, pArpRate = 1, pArpOct = 1;
+    float pArpGate = 0.8f;
+    juce::Random rng;
+    int rrCount = 0, lastRand = -1, pRrMode = 1, varCount = 0, lastVar = -1;
+    float pRrAmount = 0.5f;
+    std::atomic<int> learnTarget { -1 }, expCC { 11 }, doneCC { 0 }, doneTarget { -1 }, doneCount { 0 };
+    std::atomic<int> ccMap[128];
+    juce::RangedAudioParameter* params[P_count] {};
+    std::atomic<int> monKind { 0 }, monA { 0 }, monB { 0 }, monCount { 0 };
+    bool pPortaOn = false;
+    float pPortaTime = 150.f;
+    double lastPitch = -1.0;
+    juce::int64 clockPos = 0, curPos = 0, lastOnPos = -1000000000;
+    float satLo[2] {}, satHi[2] {};
 
     juce::AudioBuffer<float> delayBuf;
     int delayWrite = 0;

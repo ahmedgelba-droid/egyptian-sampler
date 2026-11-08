@@ -16,16 +16,16 @@ static juce::String noteName (int n)
 //==============================================================================
 NeonLookAndFeel::NeonLookAndFeel()
 {
-    setColour (juce::PopupMenu::backgroundColourId, juce::Colour (0xff17110a));
+    setColour (juce::PopupMenu::backgroundColourId, juce::Colour (0xff0d1626));
     setColour (juce::PopupMenu::textColourId, neon::text);
     setColour (juce::PopupMenu::highlightedBackgroundColourId, neon::cyan.withAlpha (0.25f));
     setColour (juce::PopupMenu::highlightedTextColourId, juce::Colours::white);
     setColour (juce::ComboBox::textColourId, neon::text);
     setColour (juce::TextButton::textColourOffId, neon::text);
     setColour (juce::TextButton::textColourOnId, juce::Colours::white);
-    setColour (juce::AlertWindow::backgroundColourId, juce::Colour (0xff17110a));
+    setColour (juce::AlertWindow::backgroundColourId, juce::Colour (0xff0d1626));
     setColour (juce::AlertWindow::textColourId, neon::text);
-    setColour (juce::TextEditor::backgroundColourId, juce::Colour (0xff0a0704));
+    setColour (juce::TextEditor::backgroundColourId, juce::Colour (0xff070c16));
     setColour (juce::TextEditor::textColourId, neon::text);
 }
 
@@ -55,17 +55,22 @@ void NeonLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w, 
     g.setColour (accent);
     g.strokePath (val, juce::PathStrokeType (2.4f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
 
-    const float br = r - 8.0f;
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff5a4524), c.x - br * 0.5f, c.y - br * 0.7f,
-                                             juce::Colour (0xff0e0a05), c.x + br * 0.6f, c.y + br, false));
+    // gold bezel + dark stone-like cap (NileVerb style)
+    const float bz = r - 5.0f;
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xfff2c866), c.x - bz * 0.6f, c.y - bz * 0.8f,
+                                             juce::Colour (0xff7a4a16), c.x + bz * 0.6f, c.y + bz * 0.9f, false));
+    g.fillEllipse (c.x - bz, c.y - bz, bz * 2.0f, bz * 2.0f);
+    const float br = r - 8.5f;
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff3c4352), c.x - br * 0.5f, c.y - br * 0.7f,
+                                             juce::Colour (0xff0b1018), c.x + br * 0.6f, c.y + br, false));
     g.fillEllipse (c.x - br, c.y - br, br * 2.0f, br * 2.0f);
-    g.setColour (accent.withAlpha (0.4f));
+    g.setColour (juce::Colour (0xff1a1209).withAlpha (0.8f));
     g.drawEllipse (c.x - br, c.y - br, br * 2.0f, br * 2.0f, 1.0f);
 
     juce::Path p;
     p.addRoundedRectangle (-1.6f, -br + 2.5f, 3.2f, br * 0.5f, 1.5f);
     p.applyTransform (juce::AffineTransform::rotation (ang).translated (c.x, c.y));
-    g.setColour (accent.brighter (0.6f));
+    g.setColour (juce::Colour (0xfff2c866));
     g.fillPath (p);
 }
 
@@ -122,7 +127,7 @@ void NeonLookAndFeel::drawComboBox (juce::Graphics& g, int w, int h, bool, int, 
 {
     auto r = juce::Rectangle<float> (0.0f, 0.0f, (float) w, (float) h).reduced (1.0f);
     const auto accent = box.findColour (juce::ComboBox::outlineColourId);
-    g.setColour (juce::Colour (0xff0a0704));
+    g.setColour (juce::Colour (0xff070c16));
     g.fillRoundedRectangle (r, 6.0f);
     g.setColour (accent.withAlpha (0.85f));
     g.drawRoundedRectangle (r, 6.0f, 1.2f);
@@ -256,7 +261,7 @@ void MapView::paint (juce::Graphics& g)
     g.setColour ((editB ? neon::magenta : neon::cyan).withAlpha (0.4f));
     g.drawRoundedRectangle (all.reduced (0.5f), 10.0f, 1.2f);
 
-    g.setColour (juce::Colour (0xff0a0704));
+    g.setColour (juce::Colour (0xff070c16));
     g.fillRect (grid);
 
     for (int k = 0; k < 128; k += 12)
@@ -275,16 +280,26 @@ void MapView::paint (juce::Graphics& g)
     g.setColour ((editB ? neon::magenta : neon::cyan).withAlpha (0.5f));
     g.drawRect (grid, 1);
 
-    // keyboard strip
+    // keyboard strip (keys altered by the chosen maqam / fine tune light up)
+    const int mqSel = (int) proc.apvts.getRawParameterValue ("maqam")->load();
+    const int rtSel = (int) proc.apvts.getRawParameterValue ("root")->load();
     for (int k = 0; k < 128; ++k)
     {
         const int pc = k % 12;
         const bool black = pc == 1 || pc == 3 || pc == 6 || pc == 8 || pc == 10;
-        g.setColour (black ? juce::Colour (0xff1a1209) : neon::text.withAlpha (0.82f));
+        g.setColour (black ? juce::Colour (0xff101826) : neon::text.withAlpha (0.82f));
         g.fillRect (keyToX (k), (float) keyStrip.getY(), keyW() + 0.5f, (float) keyStrip.getHeight());
+        {
+            const float o = proc.apvts.getRawParameterValue ("off" + juce::String (pc))->load() + NayAudioProcessor::maqamOffset (mqSel, pc, rtSel);
+            if (std::abs (o) > 0.5f)
+            {
+                g.setColour ((o < 0 ? neon::magenta : neon::amber).withAlpha (0.9f));
+                g.fillRect (keyToX (k), (float) keyStrip.getY(), keyW() + 0.5f, (float) keyStrip.getHeight());
+            }
+        }
         if (pc == 0)
         {
-            g.setColour (juce::Colour (0xff1a1209));
+            g.setColour (juce::Colour (0xff101826));
             g.setFont (uiFont (9.5f));
             g.drawText ("C" + juce::String (k / 12 - 1), (int) keyToX (k), keyStrip.getBottom() - 14, 24, 12, juce::Justification::centredLeft, false);
         }
@@ -419,6 +434,49 @@ void MapView::mouseDrag (const juce::MouseEvent& e)
 }
 
 //==============================================================================
+void WheelView::paint (juce::Graphics& g)
+{
+    auto r = getLocalBounds().toFloat().reduced (1.0f);
+    const float v = juce::jlimit (bipolar ? -1.0f : 0.0f, 1.0f, getter());
+
+    g.setColour (juce::Colour (0xff070c16));
+    g.fillRoundedRectangle (r, 6.0f);
+
+    g.saveState();
+    g.reduceClipRegion (r.toNearestInt());
+    const float off = std::fmod (std::abs (v) * 40.0f, 6.0f) * (v < 0 ? -1.0f : 1.0f) + 6.0f;
+    for (float y = r.getY() - 12.0f + off; y < r.getBottom(); y += 6.0f)
+    {
+        g.setColour (juce::Colours::white.withAlpha (0.08f));
+        g.fillRect (r.getX() + 3.0f, y, r.getWidth() - 6.0f, 2.0f);
+    }
+    g.setGradientFill (juce::ColourGradient (juce::Colours::black.withAlpha (0.6f), r.getX(), 0.0f,
+                                             juce::Colours::black.withAlpha (0.6f), r.getRight(), 0.0f, false));
+    g.fillRect (r);
+    g.setGradientFill (juce::ColourGradient (juce::Colours::transparentBlack, r.getX(), 0.0f,
+                                             juce::Colours::white.withAlpha (0.10f), r.getCentreX(), 0.0f, true));
+    g.fillRect (r);
+    g.restoreState();
+
+    const float pos = bipolar ? r.getCentreY() - v * (r.getHeight() * 0.5f - 6.0f)
+                              : r.getBottom() - 6.0f - v * (r.getHeight() - 12.0f);
+    g.setColour (col.withAlpha (0.3f));
+    g.fillRect (r.getX() + 1.0f, pos - 4.0f, r.getWidth() - 2.0f, 8.0f);
+    g.setColour (col.brighter (0.4f));
+    g.fillRect (r.getX() + 1.0f, pos - 1.5f, r.getWidth() - 2.0f, 3.0f);
+
+    if (bipolar)
+    {
+        g.setColour (neon::amber.withAlpha (0.8f));
+        g.fillRect (r.getX() - 1.0f, r.getCentreY() - 0.5f, 4.0f, 1.0f);
+        g.fillRect (r.getRight() - 3.0f, r.getCentreY() - 0.5f, 4.0f, 1.0f);
+    }
+
+    g.setColour (neon::amber.withAlpha (0.5f));
+    g.drawRoundedRectangle (r, 6.0f, 1.2f);
+}
+
+//==============================================================================
 NoteKey::NoteKey (NayAudioProcessor& p, int n) : proc (p), pc (n)
 {
     par = proc.apvts.getParameter ("off" + juce::String (pc));
@@ -476,33 +534,34 @@ void NoteKey::mouseUp (const juce::MouseEvent&)
 
 void NoteKey::paint (juce::Graphics& g)
 {
-    auto r = getLocalBounds().toFloat();
-    auto key = r.removeFromTop (48.0f).reduced (1.5f);
     const float eff = effective();
     const bool alt = std::abs (eff) > 0.5f;
-    const bool sharp = pc == 1 || pc == 3 || pc == 6 || pc == 8 || pc == 10;
-    const auto col = ! alt ? neon::dim : (eff < 0 ? neon::magenta : neon::amber);
+    const auto led = alt ? juce::Colour (0xffff3b2f) : juce::Colour (0xff2fa8ff);
+    const float cx = (float) getWidth() * 0.5f, cy = 31.0f;
 
-    g.setGradientFill (juce::ColourGradient (alt ? col.withAlpha (0.45f) : (sharp ? juce::Colour (0xff1f160a) : juce::Colour (0xff3a2c16)),
-                                             key.getX(), key.getY(),
-                                             alt ? col.withAlpha (0.12f) : juce::Colour (0xff120c05), key.getX(), key.getBottom(), false));
-    g.fillRoundedRectangle (key, 6.0f);
+    g.setColour (neon::text);
+    g.setFont (uiFont (13.0f));
+    g.drawText (kNames[pc], 0, 0, getWidth(), 13, juce::Justification::centred, false);
+
     if (alt)
     {
-        g.setColour (col.withAlpha (0.25f));
-        g.drawRoundedRectangle (key.expanded (1.5f), 7.0f, 3.0f);
+        g.setColour (led.withAlpha (0.25f));
+        g.fillEllipse (cx - 21.0f, cy - 21.0f, 42.0f, 42.0f);
     }
-    g.setColour (alt ? col : neon::dim.withAlpha (0.6f));
-    g.drawRoundedRectangle (key, 6.0f, 1.3f);
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff6a5430), cx - 8.0f, cy - 12.0f, juce::Colour (0xff0b1018), cx + 10.0f, cy + 17.0f, false));
+    g.fillEllipse (cx - 17.0f, cy - 17.0f, 34.0f, 34.0f);
+    g.setColour (neon::amber.withAlpha (0.55f));
+    g.drawEllipse (cx - 17.0f, cy - 17.0f, 34.0f, 34.0f, 1.5f);
+    g.setColour (juce::Colour (0xff070c16));
+    g.fillEllipse (cx - 11.0f, cy - 11.0f, 22.0f, 22.0f);
+    g.setColour (led);
+    g.drawEllipse (cx - 11.0f, cy - 11.0f, 22.0f, 22.0f, 1.5f);
+    g.fillEllipse (cx - 5.0f, cy - 5.0f, 10.0f, 10.0f);
 
-    g.setColour (alt ? juce::Colours::white : neon::text);
-    g.setFont (uiFont (17.0f));
-    g.drawText (kNames[pc], key.toNearestInt(), juce::Justification::centred, false);
-
-    g.setColour (alt ? col.brighter (0.3f) : neon::dim);
-    g.setFont (uiFont (13.0f));
+    g.setColour (alt ? juce::Colour (0xffff7a6a) : neon::dim);
+    g.setFont (uiFont (12.0f));
     const int v = (int) std::round (eff);
-    g.drawText ((v > 0 ? "+" : "") + juce::String (v), r.toNearestInt().withTrimmedTop (2), juce::Justification::centredTop, false);
+    g.drawText ((v > 0 ? "+" : "") + juce::String (v), 0, 49, getWidth(), 13, juce::Justification::centred, false);
 }
 
 //==============================================================================
@@ -532,8 +591,9 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     kGlide = addKnob (page, P_glide,   "GLIDE",     0, "ms", tq);
     kVibD  = addKnob (page, P_vibDepth,"VIB DEPTH", 0, "ct", tq);
     kVibR  = addKnob (page, P_vibRate, "VIB SPEED", 1, "Hz", tq);
-    kVel   = addKnob (page, P_velSens, "VELOCITY",  2, "", gd);
-    kPb    = addKnob (page, P_pbRange, "PITCH BEND", 0, "st", gd);
+    tVel   = addToggle (page, P_velOn, "VELOCITY", gd);
+    kPorta = addKnob (page, P_portaTime, "PORTA TIME", 0, "ms", gd);
+    tPorta = addToggle (page, P_portaOn, "PORTAMENTO", gd);
     tMono   = addToggle (page, P_mono,   "MONO",   tq);
     tLegato = addToggle (page, P_legato, "LEGATO", tq);
 
@@ -542,6 +602,30 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     addCombo (page, rootBox, P_root, rootAtt);
     maqamBox.setColour (juce::ComboBox::outlineColourId, gd);
     rootBox.setColour (juce::ComboBox::outlineColourId, gd);
+    rootBox.setVisible (false);
+    for (auto* b : { &minusBtn, &plusBtn, &cancelBtn })
+    {
+        b->setColour (juce::TextButton::buttonColourId, b == &cancelBtn ? neon::magenta : neon::amber);
+        page.addAndMakeVisible (*b);
+    }
+    minusBtn.onClick = [this] { stepRoot (-1); };
+    plusBtn.onClick  = [this] { stepRoot (1); };
+    cancelBtn.onClick = [this]
+    {
+        for (int i = 0; i < 12; ++i)
+            if (auto* q = proc.apvts.getParameter ("off" + juce::String (i)))
+            {
+                q->beginChangeGesture();
+                q->setValueNotifyingHost (q->convertTo0to1 (0.0f));
+                q->endChangeGesture();
+            }
+        if (auto* q = proc.apvts.getParameter ("maqam"))
+        {
+            q->beginChangeGesture();
+            q->setValueNotifyingHost (q->convertTo0to1 (0.0f));
+            q->endChangeGesture();
+        }
+    };
     for (int i = 0; i < 12; ++i)
     {
         keys[(size_t) i] = std::make_unique<NoteKey> (proc, i);
@@ -553,10 +637,6 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     kSatDrive = addKnob (page, P_satDrive, "DRIVE",  2, "", gd);
     kSatMix   = addKnob (page, P_satMix,   "AMOUNT", 2, "", gd);
 
-    tCh = addToggle (page, P_chOn, "ACTIVE", tq);
-    kChRate  = addKnob (page, P_chRate,  "RATE",   2, "Hz", tq);
-    kChDepth = addKnob (page, P_chDepth, "DEPTH",  2, "", tq);
-    kChMix   = addKnob (page, P_chMix,   "AMOUNT", 2, "", tq);
 
     tWah = addToggle (page, P_wahOn, "ACTIVE", pp);
     kWahPos = addKnob (page, P_wahPos, "PEDAL",  2, "", pp);
@@ -573,11 +653,42 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     kRvSize = addKnob (page, P_rvSize,     "SIZE",     2, "", cr);
     kRvLvl  = addKnob (page, P_rvLevel,    "LEVEL",    1, "dB", cr);
 
+    // ---- arpeggiator ----
+    tArp = addToggle (page, P_arpOn, "ARP ON", gd);
+    tArpHold = addToggle (page, P_arpHold, "HOLD", gd);
+    addCombo (page, arpModeBox, P_arpMode, arpModeAtt);
+    addCombo (page, arpRateBox, P_arpRate, arpRateAtt);
+    arpModeBox.setColour (juce::ComboBox::outlineColourId, gd);
+    arpRateBox.setColour (juce::ComboBox::outlineColourId, gd);
+    kArpOct  = addKnob (page, P_arpOct,  "OCTAVES", 0, "", gd);
+    kArpGate = addKnob (page, P_arpGate, "GATE",    2, "", gd);
+
+    // ---- wheels + bend range ----
+    page.addAndMakeVisible (pitchWheel);
+    page.addAndMakeVisible (modWheelView);
+    page.addAndMakeVisible (expWheel);
+    learnTargets.push_back ({ &expWheel, -2 });
+    expWheel.addMouseListener (this, false);
+    pbBox.setSliderStyle (juce::Slider::IncDecButtons);
+    pbBox.setIncDecButtonsMode (juce::Slider::incDecButtonsNotDraggable);
+    pbBox.setTextBoxStyle (juce::Slider::TextBoxLeft, false, 44, 32);
+    pbBox.setColour (juce::Slider::textBoxTextColourId, neon::amber);
+    pbBox.setColour (juce::Slider::textBoxBackgroundColourId, juce::Colour (0xff070c16));
+    pbBox.setColour (juce::Slider::textBoxOutlineColourId, neon::amber.withAlpha (0.6f));
+    pbBox.setColour (juce::TextButton::buttonColourId, neon::amber);
+    pbAtt = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (proc.apvts, "pbRange", pbBox);
+    pbBox.textFromValueFunction = [] (double v) { return juce::String ((int) v); };
+    pbBox.updateText();
+    page.addAndMakeVisible (pbBox);
+
     // ---- settings page: layer B, folders, mapping ----
     kLbLevel = addKnob (settings, P_layerBLevel, "B LEVEL", 1, "dB", cr);
     kLbVel   = addKnob (settings, P_layerBVel,   "B FROM VEL", 0, "", cr);
     addCombo (settings, modeBox, P_layerBMode, modeAtt);
     modeBox.setColour (juce::ComboBox::outlineColourId, cr);
+    addCombo (settings, rrBox, P_rrMode, rrAtt);
+    rrBox.setColour (juce::ComboBox::outlineColourId, gd);
+    kRrAmt = addKnob (settings, P_rrAmount, "AMOUNT", 2, "", gd);
 
     juce::Path left, right;
     left.addTriangle (0.f, 0.5f, 1.f, 0.f, 1.f, 1.f);
@@ -678,26 +789,50 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
             if (std::abs (o) > 0.5f)
                 altered << kNames[i] << (o > 0 ? " +" : " ") << (int) std::round (o) << "    ";
         }
-        drawLcd (g, lcdM, "MAQAM", mq == 0 ? juce::String ("12-TET") : NayAudioProcessor::maqamNames()[mq] + "  on  " + kNames[rt],
+        drawLcd (g, lcdM, "MAQAM", mq == 0 ? juce::String ("EQUAL") : NayAudioProcessor::maqamNames()[mq] + "  on  " + kNames[rt],
                  altered.isEmpty() ? juce::String ("no altered notes") : altered.trim(), neon::amber);
 
         drawPanel (g, pVoice, "VOICE", neon::cyan);
         drawPanel (g, pMaqam, "MAQAM  //  MICROTONAL KEYS", neon::amber);
-        drawPanel (g, pSat, "SATURATION", neon::amber);
-        drawPanel (g, pCh, "CHORUS", neon::cyan);
+        drawPanel (g, pSat, "KRONOS", neon::amber);
         drawPanel (g, pWah, "WAH", neon::green);
         drawPanel (g, pPh, "PHASER", neon::violet);
         drawPanel (g, pDelay, "DELAY", neon::cyan);
         drawPanel (g, pReverb, "REVERB", neon::magenta);
+        drawPanel (g, pArp, "ARPEGGIATOR  //  held notes, maqam tuning", neon::amber);
+        drawPanel (g, pWheels, "WHEELS", neon::cyan);
+        g.setFont (uiFont (9.0f));
+        g.setColour (neon::dim);
+        g.drawText ("PITCH", pWheels.getX() + 4, pWheels.getY() + 24, 36, 10, juce::Justification::centred, false);
+        g.drawText ("MOD", pWheels.getX() + 42, pWheels.getY() + 24, 36, 10, juce::Justification::centred, false);
+        g.drawText ("EXP", pWheels.getX() + 80, pWheels.getY() + 24, 36, 10, juce::Justification::centred, false);
+        g.drawText ("BEND RANGE", pWheels.getX() + 122, pWheels.getY() + 24, 92, 10, juce::Justification::centred, false);
+        g.setFont (uiFont (10.5f));
+        g.setColour (neon::dim);
+        g.drawText ("PATTERN", pArp.getX() + 140, pArp.getY() + 24, 100, 12, juce::Justification::centredLeft, false);
+        g.drawText ("RATE (synced to host BPM)", pArp.getX() + 300, pArp.getY() + 24, 160, 12, juce::Justification::centredLeft, false);
 
         g.setFont (uiFont (10.5f));
         g.setColour (neon::amber);
         g.drawText ("MAQAM", pMaqam.getX() + 14, pMaqam.getY() + 24, 100, 14, juce::Justification::centredLeft, false);
-        g.drawText ("ROOT KEY", pMaqam.getX() + 14, pMaqam.getY() + 80, 100, 14, juce::Justification::centredLeft, false);
+        {
+            auto d = pMaqam.getX() + 14;
+            juce::Rectangle<float> dr ((float) d, (float) pMaqam.getY() + 66.0f, 96.0f, 76.0f);
+            g.setColour (juce::Colour (0xff070c16));
+            g.fillRoundedRectangle (dr, 8.0f);
+            g.setColour (juce::Colour (0xffff3b2f).withAlpha (0.8f));
+            g.drawRoundedRectangle (dr, 8.0f, 1.2f);
+            g.setColour (neon::dim);
+            g.setFont (uiFont (9.0f));
+            g.drawText ("ROOT KEY", dr.toNearestInt().removeFromTop (16), juce::Justification::centred, false);
+            g.setColour (juce::Colour (0xffff3b2f));
+            g.setFont (juce::Font (juce::FontOptions ("Consolas", 44.0f, juce::Font::bold)));
+            g.drawText (kNames[rt], dr.toNearestInt().withTrimmedTop (14), juce::Justification::centred, false);
+        }
         g.setColour (neon::dim);
         g.setFont (uiFont (10.5f, false));
-        g.drawText ("Pick a maqam + root: the altered notes light up with their cents.  Click a key = quarter-tone flat on/off.  Drag a key up/down = fine tune.",
-                    pMaqam.getX() + 250, pMaqam.getBottom() - 20, 710, 14, juce::Justification::centredLeft, false);
+        g.drawText ("Altered notes light up red.  Click = quarter-tone on/off.  Drag = fine tune.",
+                    pMaqam.getX() + 330, pMaqam.getY() + 6, 630, 14, juce::Justification::centredRight, false);
     };
 
     // ---------------- settings page painting ----------------
@@ -719,16 +854,17 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
         g.setColour (neon::dim);
         g.drawText ("MODE", pLayer.getX() + 340, pLayer.getY() + 24, 100, 14, juce::Justification::centredLeft, false);
         g.setFont (uiFont (11.0f, false));
-        g.drawFittedText ("Layer B plays from the chosen velocity upward.\n"
-                          "SWITCH = replaces layer A.   STACK = plays on top of A.\n"
-                          "Edit the key/velocity zones of each layer below.",
-                          pLayer.getX() + 580, pLayer.getY() + 28, 370, 60, juce::Justification::topLeft, 4);
+        g.drawFittedText ("Layer B plays from the chosen velocity.\nSWITCH replaces A.   STACK plays over A.",
+                          pLayer.getX() + 560, pLayer.getY() + 30, 170, 60, juce::Justification::topLeft, 4);
+
+        drawPanel (g, pVar, "SAMPLE VARIATION", neon::amber);
+
     };
 
     refreshGroups();
     built = true;
-    setSize (1000, 600); // last, so resized() finds every component already created
-    startTimerHz (10);
+    setSize (1064, 742); // last, so resized() finds every component already created
+    startTimerHz (20);
 }
 
 NayAudioProcessorEditor::~NayAudioProcessorEditor()
@@ -773,6 +909,8 @@ NayAudioProcessorEditor::Knob* NayAudioProcessorEditor::addKnob (juce::Component
     k->label.setColour (juce::Label::textColourId, neon::dim);
     k->label.setInterceptsMouseClicks (false, false);
 
+    learnTargets.push_back ({ &s, idx });
+    s.addMouseListener (this, false);
     parent.addAndMakeVisible (s);
     parent.addAndMakeVisible (k->label);
 
@@ -785,6 +923,8 @@ juce::ToggleButton* NayAudioProcessorEditor::addToggle (juce::Component& parent,
     auto t = std::make_unique<juce::ToggleButton> (text);
     t->setColour (juce::ToggleButton::tickColourId, accent);
     toggleAtts.push_back (std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, NayAudioProcessor::paramIds[idx], *t));
+    learnTargets.push_back ({ t.get(), idx });
+    t->addMouseListener (this, false);
     parent.addAndMakeVisible (*t);
     toggles.push_back (std::move (t));
     return toggles.back().get();
@@ -798,6 +938,8 @@ void NayAudioProcessorEditor::addCombo (juce::Component& parent, juce::ComboBox&
 
     att = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (proc.apvts, NayAudioProcessor::paramIds[idx], box);
     box.setColour (juce::ComboBox::outlineColourId, neon::cyan);
+    learnTargets.push_back ({ &box, idx });
+    box.addMouseListener (this, false);
     parent.addAndMakeVisible (box);
 }
 
@@ -816,6 +958,78 @@ void NayAudioProcessorEditor::layoutRow (juce::Rectangle<int> area, std::initial
 }
 
 //==============================================================================
+void NayAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
+{
+    if (! e.mods.isPopupMenu())
+        return;
+
+    int target = -99;
+    for (auto& p : learnTargets)
+        if (p.first == e.eventComponent) { target = p.second; break; }
+    if (target == -99)
+        return;
+
+    const int cc = proc.getAssignedCC (target);
+    juce::PopupMenu m;
+    m.addItem (1, proc.getLearnTarget() == target ? "Cancel MIDI Learn"
+                                                  : "MIDI Learn  (then move a knob / pedal on your device)");
+    m.addItem (2, target == -2 ? "Reset pedal to CC 11" : (cc >= 0 ? "Clear assignment (CC " + juce::String (cc) + ")" : "Clear assignment"),
+               target == -2 ? cc != 11 : cc >= 0);
+
+    juce::Component::SafePointer<NayAudioProcessorEditor> safe (this);
+    m.showMenuAsync (juce::PopupMenu::Options(), [safe, target] (int r)
+    {
+        if (safe == nullptr) return;
+        if (r == 1)      safe->proc.setLearnTarget (target);
+        else if (r == 2) safe->proc.clearAssign (target);
+        safe->repaint (safe->midiRect);
+    });
+}
+
+void NayAudioProcessorEditor::timerCallback()
+{
+    {
+        int cc, tgt, cnt;
+        proc.getLearnDone (cc, tgt, cnt);
+        if (cnt != lastLearnCount) { lastLearnCount = cnt; lastLearnMs = juce::Time::getMillisecondCounter(); repaint (midiRect); }
+        if (proc.getLearnTarget() != lastLearnT) { lastLearnT = proc.getLearnTarget(); repaint (midiRect); }
+        if (juce::Time::getMillisecondCounter() - lastLearnMs < 3100) repaint (midiRect);
+    }
+
+    int k, a, b, cnt;
+    proc.getMidiMonitor (k, a, b, cnt);
+    const bool flash = juce::Time::getMillisecondCounter() - lastMonMs < 400;
+    if (cnt != lastMonCount)
+    {
+        lastMonCount = cnt;
+        lastMonMs = juce::Time::getMillisecondCounter();
+        repaint (midiRect);
+    }
+    else if (flash)
+        repaint (midiRect);
+
+    pitchWheel.repaint();
+    modWheelView.repaint();
+    expWheel.repaint();
+
+    if ((++tick & 1) == 0)
+    {
+        if (page.isVisible()) page.repaint();
+        if (settings.isVisible()) mapView.repaint();
+    }
+}
+
+void NayAudioProcessorEditor::stepRoot (int d)
+{
+    if (auto* q = proc.apvts.getParameter ("root"))
+    {
+        const int cur = (int) proc.apvts.getRawParameterValue ("root")->load();
+        q->beginChangeGesture();
+        q->setValueNotifyingHost (q->convertTo0to1 ((float) ((cur + d + 12) % 12)));
+        q->endChangeGesture();
+    }
+}
+
 void NayAudioProcessorEditor::stepGroup (int delta)
 {
     const int n = proc.getNumGroups();
@@ -849,6 +1063,67 @@ void NayAudioProcessorEditor::refreshGroups()
 }
 
 //==============================================================================
+// simple hand-drawn hieroglyph-like symbols for the carved side borders
+static void drawGlyph (juce::Graphics& g, int kind, float cx, float cy, float s, juce::Colour col)
+{
+    juce::Path p;
+    switch (kind % 6)
+    {
+        case 0: // ankh
+            p.addEllipse (cx - s * 0.22f, cy - s * 0.5f, s * 0.44f, s * 0.5f);
+            p.addRectangle (cx - s * 0.05f, cy, s * 0.1f, s * 0.5f);
+            p.addRectangle (cx - s * 0.3f, cy + s * 0.08f, s * 0.6f, s * 0.09f);
+            break;
+        case 1: // eye
+            p.startNewSubPath (cx - s * 0.4f, cy);
+            p.quadraticTo (cx, cy - s * 0.4f, cx + s * 0.4f, cy);
+            p.quadraticTo (cx, cy + s * 0.3f, cx - s * 0.4f, cy);
+            p.addEllipse (cx - s * 0.12f, cy - s * 0.12f, s * 0.24f, s * 0.24f);
+            p.addRectangle (cx - s * 0.04f, cy + s * 0.22f, s * 0.08f, s * 0.26f);
+            break;
+        case 2: // water
+            for (int k = 0; k < 3; ++k)
+            {
+                const float yy = cy - s * 0.25f + (float) k * s * 0.25f;
+                p.startNewSubPath (cx - s * 0.4f, yy);
+                for (int z = 1; z <= 4; ++z)
+                    p.lineTo (cx - s * 0.4f + (float) z * s * 0.2f, yy + (z % 2 ? -s * 0.1f : 0.0f));
+            }
+            break;
+        case 3: // bird
+            p.addEllipse (cx - s * 0.12f, cy - s * 0.45f, s * 0.24f, s * 0.24f);
+            p.addRoundedRectangle (cx - s * 0.22f, cy - s * 0.2f, s * 0.44f, s * 0.5f, s * 0.15f);
+            p.addRectangle (cx - s * 0.16f, cy + s * 0.3f, s * 0.05f, s * 0.2f);
+            p.addRectangle (cx + s * 0.11f, cy + s * 0.3f, s * 0.05f, s * 0.2f);
+            break;
+        case 4: // was scepter
+            p.addRectangle (cx - s * 0.04f, cy - s * 0.4f, s * 0.08f, s * 0.9f);
+            p.addTriangle (cx - s * 0.2f, cy - s * 0.5f, cx + s * 0.2f, cy - s * 0.5f, cx, cy - s * 0.25f);
+            break;
+        default: // sun disk
+            p.addEllipse (cx - s * 0.3f, cy - s * 0.3f, s * 0.6f, s * 0.6f);
+            p.addEllipse (cx - s * 0.08f, cy - s * 0.08f, s * 0.16f, s * 0.16f);
+            break;
+    }
+    const auto st = juce::PathStrokeType (s * 0.09f);
+    g.setColour (juce::Colour (0xfff2c866).withAlpha (0.35f));
+    g.strokePath (p, st, juce::AffineTransform::translation (1.0f, 1.0f));
+    g.setColour (col);
+    g.strokePath (p, st);
+}
+
+static void drawLotus (juce::Graphics& g, float cx, float cy, float s)
+{
+    for (int k = -2; k <= 2; ++k)
+    {
+        juce::Path p;
+        p.addEllipse (-s * 0.12f, -s * 0.5f, s * 0.24f, s * 0.5f);
+        p.applyTransform (juce::AffineTransform::rotation ((float) k * 0.45f).translated (cx, cy));
+        g.setColour (juce::Colour (0xffe3a93f).withAlpha (0.85f));
+        g.strokePath (p, juce::PathStrokeType (1.2f));
+    }
+}
+
 void NayAudioProcessorEditor::rebuildBackground()
 {
     const int w = getWidth(), h = getHeight();
@@ -858,36 +1133,105 @@ void NayAudioProcessorEditor::rebuildBackground()
     bgImage = juce::Image (juce::Image::ARGB, w, h, true);
     juce::Graphics g (bgImage);
 
+    // night-blue stone body
     g.setGradientFill (juce::ColourGradient (neon::bg1, 0.0f, 0.0f, neon::bg0, 0.0f, (float) h, false));
     g.fillAll();
 
-    // mashrabiya-style eight-point star lattice
-    g.setColour (neon::amber.withAlpha (0.07f));
+    // faint eight-point star lattice
+    g.setColour (neon::amber.withAlpha (0.05f));
     for (int y = 0; y < h + 48; y += 48)
         for (int x = 0; x < w + 48; x += 48)
         {
             juce::Path s;
             s.addStar ({ (float) x, (float) y }, 8, 9.0f, 21.0f);
             g.strokePath (s, juce::PathStrokeType (1.0f));
-            juce::Path s2;
-            s2.addStar ({ (float) x + 24.0f, (float) y + 24.0f }, 4, 4.0f, 9.0f);
-            g.strokePath (s2, juce::PathStrokeType (1.0f));
         }
 
-    g.setGradientFill (juce::ColourGradient (neon::amber.withAlpha (0.16f), 0.0f, 0.0f, neon::amber.withAlpha (0.0f), 520.0f, 360.0f, true));
-    g.fillRect (0, 0, w, h);
-    g.setGradientFill (juce::ColourGradient (neon::cyan.withAlpha (0.10f), (float) w, (float) h, neon::cyan.withAlpha (0.0f), (float) w - 520.0f, (float) h - 330.0f, true));
-    g.fillRect (0, 0, w, h);
-
-    // Egyptian border frieze
-    const juce::Colour fr[4] = { neon::amber, neon::cyan, neon::magenta, neon::cyan };
-    for (int x = 16, i = 0; x < w - 24; x += 12, ++i)
+    // stone grain
+    juce::Random rnd (7);
+    for (int i = 0; i < 5000; ++i)
     {
-        g.setColour (fr[i % 4].withAlpha (0.9f));
-        g.fillRect (x, 62, 8, 4);
+        g.setColour ((i & 1 ? juce::Colours::white : juce::Colours::black).withAlpha (0.035f));
+        g.fillRect (rnd.nextInt (w), rnd.nextInt (h), 1 + rnd.nextInt (2), 1);
     }
-    g.setColour (neon::amber.withAlpha (0.8f));
-    g.fillRect (16, 68, w - 32, 1);
+
+    // ---- header: dusk sky over the Nile + pyramids ----
+    const int fx = 30, hy = 70, fh = 36;
+    juce::Rectangle<float> sky ((float) fx, 0.0f, (float) (w - 2 * fx), (float) hy);
+    juce::ColourGradient sg (juce::Colour (0xff0d1830), 0.0f, 0.0f, juce::Colour (0xffd0782c), 0.0f, (float) hy, false);
+    sg.addColour (0.55, juce::Colour (0xff3a3a63));
+    g.setGradientFill (sg);
+    g.fillRect (sky);
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xffffb35c).withAlpha (0.45f), (float) w * 0.66f, (float) hy,
+                                             juce::Colours::transparentBlack, (float) w * 0.66f, 4.0f, true));
+    g.fillRect (sky);
+
+    g.setColour (juce::Colour (0xff0a1020));
+    for (int k = 0; k < 2; ++k)
+    {
+        const float px = (float) w * (0.70f + 0.07f * (float) k), sz = k == 0 ? 54.0f : 36.0f;
+        juce::Path pyr;
+        pyr.addTriangle (px - sz, (float) hy, px + sz, (float) hy, px, (float) hy - sz * 0.8f);
+        g.fillPath (pyr);
+    }
+    for (int x = fx + 330; x < w - fx - 20; x += 11)             // skyline
+        if (x < (int) ((float) w * 0.60f) || x > (int) ((float) w * 0.82f))
+            g.fillRect (x, hy - 6 - (x * 7919 % 13), 7, 20);
+    for (int k = 0; k < 3; ++k)                                  // palms
+    {
+        const float px = (float) fx + 380.0f + (float) k * 90.0f;
+        g.drawLine (px, (float) hy, px + 2.0f, (float) hy - 26.0f, 2.0f);
+        for (int f = -2; f <= 2; ++f)
+            g.drawLine (px + 2.0f, (float) hy - 26.0f, px + 2.0f + (float) f * 7.0f, (float) hy - 26.0f + std::abs ((float) f) * 3.0f, 1.5f);
+    }
+
+    // ---- bronze carved frame: sides + footer ----
+    auto bronze = [&] (juce::Rectangle<int> r, bool vertical)
+    {
+        juce::ColourGradient bg (juce::Colour (0xff6a3d10), (float) r.getX(), (float) r.getY(),
+                                 juce::Colour (0xff6a3d10), vertical ? (float) r.getRight() : (float) r.getX(),
+                                 vertical ? (float) r.getY() : (float) r.getBottom(), false);
+        bg.addColour (0.5, juce::Colour (0xffc58a38));
+        g.setGradientFill (bg);
+        g.fillRect (r);
+        for (int i = 0; i < r.getWidth() * r.getHeight() / 40; ++i)
+        {
+            g.setColour ((i & 1 ? juce::Colours::black : juce::Colours::white).withAlpha (0.06f));
+            g.fillRect (r.getX() + rnd.nextInt (r.getWidth()), r.getY() + rnd.nextInt (r.getHeight()), 2, 1);
+        }
+    };
+
+    bronze ({ 0, 0, fx, h }, true);
+    bronze ({ w - fx, 0, fx, h }, true);
+    bronze ({ fx, h - fh, w - 2 * fx, fh }, false);
+
+    for (int side = 0; side < 2; ++side)
+    {
+        const float cx = side == 0 ? (float) fx * 0.5f : (float) w - (float) fx * 0.5f;
+        for (int i = 0, y = 14; y < h - fh - 8; y += 36, ++i)
+            drawGlyph (g, i + side * 3, cx, (float) y + 14.0f, 20.0f, juce::Colour (0xff2b1807).withAlpha (0.9f));
+    }
+
+    // footer: carved symbols + "Developed in Egypt" with lotus flowers
+    for (int i = 0, x = fx + 14; x < w - fx - 14; x += 34, ++i)
+        if (x < w / 2 - 120 || x > w / 2 + 120)
+            drawGlyph (g, i, (float) x, (float) h - (float) fh * 0.5f, 18.0f, juce::Colour (0xff2b1807).withAlpha (0.9f));
+
+    g.setColour (juce::Colour (0xff0b1018));
+    g.fillRoundedRectangle ((float) w * 0.5f - 112.0f, (float) h - (float) fh + 4.0f, 224.0f, (float) fh - 8.0f, 8.0f);
+    g.setColour (juce::Colour (0xffb8863a));
+    g.drawRoundedRectangle ((float) w * 0.5f - 112.0f, (float) h - (float) fh + 4.0f, 224.0f, (float) fh - 8.0f, 8.0f, 1.2f);
+    drawLotus (g, (float) w * 0.5f - 92.0f, (float) h - 8.0f, 20.0f);
+    drawLotus (g, (float) w * 0.5f + 92.0f, (float) h - 8.0f, 20.0f);
+    g.setColour (juce::Colour (0xfff2d88a));
+    g.setFont (uiFont (12.0f, false));
+    g.drawText ("Developed in Egypt", (int) ((float) w * 0.5f - 80.0f), h - fh + 4, 160, fh - 8, juce::Justification::centred, false);
+
+    // inner bronze edge around the content area
+    g.setColour (juce::Colour (0xffb8863a).withAlpha (0.9f));
+    g.drawRect (fx, hy, w - 2 * fx, h - hy - fh, 2);
+    g.setColour (juce::Colour (0xfff2c866).withAlpha (0.35f));
+    g.drawRect (fx + 2, hy + 2, w - 2 * fx - 4, h - hy - fh - 4, 1);
 }
 
 void NayAudioProcessorEditor::drawPanel (juce::Graphics& g, juce::Rectangle<int> ri, const juce::String& title, juce::Colour accent)
@@ -895,8 +1239,8 @@ void NayAudioProcessorEditor::drawPanel (juce::Graphics& g, juce::Rectangle<int>
     auto r = ri.toFloat();
     g.setColour (neon::panel.withAlpha (0.88f));
     g.fillRoundedRectangle (r, 8.0f);
-    g.setColour (accent.withAlpha (0.30f));
-    g.drawRoundedRectangle (r.reduced (0.5f), 8.0f, 1.0f);
+    g.setColour (juce::Colour (0xffb8863a).withAlpha (0.75f));
+    g.drawRoundedRectangle (r.reduced (0.5f), 8.0f, 1.5f);
 
     g.setColour (accent);
     const float L = 11.0f;
@@ -905,16 +1249,25 @@ void NayAudioProcessorEditor::drawPanel (juce::Graphics& g, juce::Rectangle<int>
     g.fillRect (r.getX(), r.getBottom() - 2.0f, L, 2.0f);     g.fillRect (r.getX(), r.getBottom() - L, 2.0f, L);
     g.fillRect (r.getRight() - L, r.getBottom() - 2.0f, L, 2.0f); g.fillRect (r.getRight() - 2.0f, r.getBottom() - L, 2.0f, L);
 
-    g.setFont (uiFont (11.5f).withExtraKerningFactor (0.12f));
-    g.setColour (accent);
-    g.drawText (title, ri.getX() + 14, ri.getY() + 6, ri.getWidth() - 20, 16, juce::Justification::centredLeft, false);
+    const auto tf = uiFont (11.5f).withExtraKerningFactor (0.08f);
+    juce::GlyphArrangement ga;
+    ga.addLineOfText (tf, title, 0.0f, 0.0f);
+    const float tw = juce::jmin ((float) ri.getWidth() - 28.0f, ga.getBoundingBox (0, -1, true).getWidth() + 18.0f);
+    juce::Rectangle<float> plate ((float) ri.getX() + 10.0f, (float) ri.getY() + 3.0f, tw, 19.0f);
+    g.setColour (juce::Colour (0xff070c16));
+    g.fillRoundedRectangle (plate, 5.0f);
+    g.setColour (juce::Colour (0xffb8863a));
+    g.drawRoundedRectangle (plate, 5.0f, 1.2f);
+    g.setFont (tf);
+    g.setColour (juce::Colour (0xfff2d88a));
+    g.drawText (title, plate.toNearestInt(), juce::Justification::centred, true);
 }
 
 void NayAudioProcessorEditor::drawLcd (juce::Graphics& g, juce::Rectangle<int> ri, const juce::String& tag,
                                        const juce::String& name, const juce::String& sub, juce::Colour accent)
 {
     auto r = ri.toFloat();
-    g.setColour (juce::Colour (0xff0a0704));
+    g.setColour (juce::Colour (0xff070c16));
     g.fillRoundedRectangle (r, 8.0f);
     g.setColour (accent.withAlpha (0.18f));
     g.drawRoundedRectangle (r.expanded (1.5f), 9.0f, 3.0f);
@@ -941,25 +1294,70 @@ void NayAudioProcessorEditor::paint (juce::Graphics& g)
 {
     g.drawImageAt (bgImage, 0, 0);
 
-    drawAnkh (g, 22.0f, 12.0f, 40.0f, neon::amber);
+    drawAnkh (g, 52.0f, 12.0f, 40.0f, neon::amber);
+
+    // ---- MIDI monitor strip ----
+    {
+        int k, a, b, cnt;
+        proc.getMidiMonitor (k, a, b, cnt);
+
+        juce::String t = "waiting for MIDI...";
+        if (k == 1 || k == 2)
+        {
+            const juce::String nn = juce::String (kNames[a % 12]) + juce::String (a / 12);   // C5 = middle C (60)
+            t = k == 1 ? "Note on: " + nn + " / velocity " + juce::String (b) : "Note off: " + nn;
+        }
+        else if (k == 3)
+        {
+            juce::String nm = a == 1 ? "Mod Wheel" : a == 7 ? "Volume" : a == 11 ? "Expression" : a == 64 ? "Sustain" : "CC " + juce::String (a);
+            t = nm + " (CC " + juce::String (a) + "): " + juce::String (b);
+        }
+        else if (k == 4)
+            t = "Pitch bend: " + juce::String (((float) a - 8192.0f) / 8192.0f, 2);
+
+        {
+            auto nameOf = [this] (int t) { return t == -2 ? juce::String ("Expression pedal") : proc.getParamLabel (t); };
+            int dcc, dtgt, dcnt;
+            proc.getLearnDone (dcc, dtgt, dcnt);
+            if (proc.getLearnTarget() != -1)
+                t = "MIDI LEARN:  move a knob / pedal on your MIDI device for  [ " + nameOf (proc.getLearnTarget()) + " ]   (right-click it again to cancel)";
+            else if (juce::Time::getMillisecondCounter() - lastLearnMs < 3000 && lastLearnCount > 0)
+                t = "Assigned  CC " + juce::String (dcc) + "  ->  " + nameOf (dtgt);
+        }
+
+        auto r = midiRect.toFloat();
+        g.setColour (juce::Colour (0xff070c16));
+        g.fillRoundedRectangle (r, 6.0f);
+        g.setColour (neon::amber.withAlpha (0.45f));
+        g.drawRoundedRectangle (r.reduced (0.5f), 6.0f, 1.0f);
+
+        const float age = (float) (juce::Time::getMillisecondCounter() - lastMonMs);
+        const float act = juce::jlimit (0.0f, 1.0f, 1.0f - age / 400.0f);
+        g.setColour (neon::cyan.withAlpha (0.25f + 0.75f * act));
+        g.fillEllipse (r.getX() + 10.0f, r.getCentreY() - 4.0f, 8.0f, 8.0f);
+
+        g.setColour (k == 0 ? neon::dim : neon::text);
+        g.setFont (uiFont (12.5f, false));
+        g.drawText (t, midiRect.withTrimmedLeft (28), juce::Justification::centredLeft, false);
+    }
 
     auto f = juce::Font (juce::FontOptions ("Georgia", 30.0f, juce::Font::bold)).withExtraKerningFactor (0.1f);
     g.setFont (f);
     for (int d = 3; d >= 1; --d)
     {
         g.setColour (neon::amber.withAlpha (0.07f));
-        g.drawText ("EGYPTIAN SAMPLER", 62 - d, 8 - d, 520 + 2 * d, 36 + 2 * d, juce::Justification::centredLeft, false);
+        g.drawText ("EGYPTIAN SAMPLER", 92 - d, 8 - d, 520 + 2 * d, 36 + 2 * d, juce::Justification::centredLeft, false);
     }
     g.setColour (neon::amber.brighter (0.3f));
-    g.drawText ("EGYPTIAN SAMPLER", 62, 8, 520, 36, juce::Justification::centredLeft, false);
+    g.drawText ("EGYPTIAN SAMPLER", 92, 8, 520, 36, juce::Justification::centredLeft, false);
 
     g.setFont (uiFont (10.5f).withExtraKerningFactor (0.25f));
     g.setColour (neon::cyan);
-    g.drawText ("MAQAM ENGINE  //  MICROTONAL SAMPLER", 64, 42, 520, 14, juce::Justification::centredLeft, false);
+    g.drawText ("MAQAM ENGINE  //  MICROTONAL SAMPLER", 94, 42, 520, 14, juce::Justification::centredLeft, false);
 
     g.setFont (juce::Font (juce::FontOptions ("Segoe UI", 26.0f, juce::Font::bold)));
     g.setColour (neon::amber);
-    g.drawText (juce::String (L"سامبلر مصري"), 560, 10, 260, 40, juce::Justification::centredRight, false);
+    g.drawText (juce::String (L"سامبلر مصري"), 590, 10, 260, 40, juce::Justification::centredRight, false);
 }
 
 void NayAudioProcessorEditor::resized()
@@ -969,8 +1367,9 @@ void NayAudioProcessorEditor::resized()
 
     rebuildBackground();
 
-    mapButton.setBounds (842, 16, 142, 32);
-    pageRect = { 16, 76, 968, 512 };
+    mapButton.setBounds (872, 16, 142, 32);
+    midiRect = { 46, 674, 968, 24 };
+    pageRect = { 46, 76, 968, 592 };
     page.setBounds (pageRect);
     settings.setBounds (pageRect);
 
@@ -981,34 +1380,41 @@ void NayAudioProcessorEditor::resized()
     nextA.setBounds (lcdA.getRight() - 28, lcdA.getCentreY() - 14, 20, 28);
 
     pVoice = { 0, 68, 968, 128 };
-    layoutRow ({ 10, pVoice.getY() + 22, 704, 100 }, { kGain, kAtk, kRel, kGlide, kVibD, kVibR, kVel, kPb });
-    tMono->setBounds (748, pVoice.getY() + 34, 130, 30);
-    tLegato->setBounds (748, pVoice.getY() + 76, 130, 30);
+    layoutRow ({ 10, pVoice.getY() + 22, 704, 100 }, { kGain, kAtk, kRel, kVibD, kVibR, kGlide, kPorta });
+    tMono->setBounds (748, pVoice.getY() + 22, 150, 24);
+    tLegato->setBounds (748, pVoice.getY() + 48, 150, 24);
+    tVel->setBounds (748, pVoice.getY() + 74, 150, 24);
+    tPorta->setBounds (748, pVoice.getY() + 100, 150, 24);
 
     pMaqam = { 0, 204, 968, 150 };
-    maqamBox.setBounds (14, pMaqam.getY() + 40, 210, 28);
-    rootBox.setBounds (14, pMaqam.getY() + 96, 210, 28);
+    maqamBox.setBounds (14, pMaqam.getY() + 34, 226, 26);
+    minusBtn.setBounds (118, pMaqam.getY() + 66, 58, 34);
+    plusBtn.setBounds (182, pMaqam.getY() + 66, 58, 34);
+    cancelBtn.setBounds (118, pMaqam.getY() + 106, 122, 36);
+    static const float px[12] = { 0, 0.5f, 1, 1.5f, 2, 3, 3.5f, 4, 4.5f, 5, 5.5f, 6 };
     for (int i = 0; i < 12; ++i)
-        keys[(size_t) i]->setBounds (250 + i * 59, pMaqam.getY() + 30, 53, 70);
+    {
+        const bool sharp = i == 1 || i == 3 || i == 6 || i == 8 || i == 10;
+        keys[(size_t) i]->setBounds (250 + (int) (px[i] * 100.0f) + 15, pMaqam.getY() + (sharp ? 20 : 84), 70, 62);
+    }
 
-    const int counts[6] = { 2, 3, 2, 3, 3, 2 };
+    const int counts[5] = { 2, 2, 3, 3, 2 };
     int sum = 0;
-    for (int c : counts) sum += c * 58 + 14;
-    const int gap = (968 - sum) / 5;
+    for (int c : counts) sum += c * 72 + 14;
+    const int gap = (968 - sum) / 4;
     const int fy = 362, fh = 132;
 
-    juce::Rectangle<int>* fx[6] = { &pSat, &pCh, &pWah, &pPh, &pDelay, &pReverb };
+    juce::Rectangle<int>* fx[5] = { &pSat, &pWah, &pPh, &pDelay, &pReverb };
     int x = 0;
-    for (int i = 0; i < 6; ++i)
+    for (int i = 0; i < 5; ++i)
     {
-        const int w = counts[i] * 58 + 14;
+        const int w = counts[i] * 72 + 14;
         *fx[i] = { x, fy, w, fh };
         x += w + gap;
     }
 
-    auto knobArea = [&] (const juce::Rectangle<int>& p, int n) { return juce::Rectangle<int> (p.getX() + 7, p.getY() + 22, n * 58, 80); };
+    auto knobArea = [&] (const juce::Rectangle<int>& p, int n) { return juce::Rectangle<int> (p.getX() + 7, p.getY() + 22, n * 72, 80); };
     layoutRow (knobArea (pSat, 2),    { kSatDrive, kSatMix });
-    layoutRow (knobArea (pCh, 3),     { kChRate, kChDepth, kChMix });
     layoutRow (knobArea (pWah, 2),    { kWahPos, kWahMix });
     layoutRow (knobArea (pPh, 3),     { kPhRate, kPhDepth, kPhMix });
     layoutRow (knobArea (pDelay, 3),  { kDlTime, kDlFb, kDlLvl });
@@ -1016,7 +1422,6 @@ void NayAudioProcessorEditor::resized()
 
     auto togArea = [] (const juce::Rectangle<int>& p) { return juce::Rectangle<int> (p.getX() + 8, p.getBottom() - 28, p.getWidth() - 16, 22); };
     tSat->setBounds (togArea (pSat));
-    tCh->setBounds (togArea (pCh));
     tWah->setBounds (togArea (pWah));
     tPh->setBounds (togArea (pPh));
 
@@ -1031,9 +1436,24 @@ void NayAudioProcessorEditor::resized()
     renameButton.setBounds (616, 32, 150, 28);
     info.setBounds (776, 0, 190, 60);
 
-    pLayer = { 0, 68, 968, 104 };
+    pLayer = { 0, 68, 740, 104 };
+    pVar = { 748, 68, 220, 104 };
+    rrBox.setBounds (pVar.getX() + 12, pVar.getY() + 44, 112, 28);
+    layoutRow ({ pVar.getX() + 128, pVar.getY() + 24, 84, 78 }, { kRrAmt });
     layoutRow ({ 10, pLayer.getY() + 22, 300, 80 }, { kLbLevel, kLbVel });
     modeBox.setBounds (340, pLayer.getY() + 44, 200, 28);
 
-    mapView.setBounds (0, 180, 968, 332);
+    mapView.setBounds (0, 180, 968, 412);
+
+    pArp = { 0, 502, 740, 90 };
+    pWheels = { 748, 502, 220, 90 };
+    pitchWheel.setBounds (pWheels.getX() + 8, pWheels.getY() + 36, 28, 50);
+    modWheelView.setBounds (pWheels.getX() + 46, pWheels.getY() + 36, 28, 50);
+    expWheel.setBounds (pWheels.getX() + 84, pWheels.getY() + 36, 28, 50);
+    pbBox.setBounds (pWheels.getX() + 124, pWheels.getY() + 40, 88, 34);
+    tArp->setBounds (12, pArp.getY() + 28, 110, 26);
+    tArpHold->setBounds (12, pArp.getY() + 58, 110, 26);
+    arpModeBox.setBounds (140, pArp.getY() + 38, 150, 28);
+    arpRateBox.setBounds (300, pArp.getY() + 38, 110, 28);
+    layoutRow ({ 520, pArp.getY() + 20, 200, 66 }, { kArpOct, kArpGate });
 }

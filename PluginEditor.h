@@ -9,16 +9,16 @@
 // Egyptian palette (names kept from the first version): turquoise, carnelian, lapis, papyrus green, gold.
 namespace neon
 {
-    const juce::Colour bg0     { 0xff0a0805 };
-    const juce::Colour bg1     { 0xff1f1609 };
-    const juce::Colour panel   { 0xff17110a };
+    const juce::Colour bg0     { 0xff070b14 };
+    const juce::Colour bg1     { 0xff15233a };
+    const juce::Colour panel   { 0xff0d1626 };
     const juce::Colour cyan    { 0xff2fe0c4 };   // turquoise
     const juce::Colour magenta { 0xffe2573f };   // carnelian
     const juce::Colour violet  { 0xff4a86ff };   // lapis
     const juce::Colour green   { 0xffa6d84f };   // papyrus
-    const juce::Colour amber   { 0xfff0b83c };   // gold
-    const juce::Colour dim     { 0xff9a8a6a };
-    const juce::Colour text    { 0xfff3e6c8 };
+    const juce::Colour amber   { 0xffe3a93f };   // gold
+    const juce::Colour dim     { 0xff9fa9bd };
+    const juce::Colour text    { 0xfff1e2c0 };
 }
 
 class NeonLookAndFeel : public juce::LookAndFeel_V4
@@ -33,6 +33,20 @@ public:
     void drawComboBox (juce::Graphics&, int w, int h, bool isDown, int bx, int by, int bw, int bh, juce::ComboBox&) override;
     juce::Font getComboBoxFont (juce::ComboBox&) override;
     juce::Font getTextButtonFont (juce::TextButton&, int buttonHeight) override;
+};
+
+// Vertical wheel (pitch / mod) that shows the incoming MIDI value, like a keyboard's wheels.
+class WheelView : public juce::Component
+{
+public:
+    WheelView (std::function<float()> getValue, bool bipolarMode, juce::Colour c)
+        : getter (std::move (getValue)), bipolar (bipolarMode), col (c) {}
+    void paint (juce::Graphics&) override;
+
+private:
+    std::function<float()> getter;
+    bool bipolar;
+    juce::Colour col;
 };
 
 // One note button (C..B). Lit when the note is altered (by the maqam or by hand); the value in cents is shown below.
@@ -104,6 +118,7 @@ public:
 
     void paint (juce::Graphics&) override;
     void resized() override;
+    void mouseDown (const juce::MouseEvent&) override;   // right-click on a control = MIDI learn menu
 
 private:
     struct Knob
@@ -119,7 +134,13 @@ private:
         void paint (juce::Graphics& g) override { if (onPaint) onPaint (g); }
     };
 
-    void timerCallback() override { if (page.isVisible()) page.repaint(); }
+    void timerCallback() override;
+    int lastMonCount = -1, tick = 0;
+    juce::uint32 lastMonMs = 0;
+    juce::Rectangle<int> midiRect;
+    std::vector<std::pair<juce::Component*, int>> learnTargets;
+    int lastLearnT = -1, lastLearnCount = 0;
+    juce::uint32 lastLearnMs = 0;
     Knob* addKnob (juce::Component& parent, int paramIndex, const char* name, int decimals, const juce::String& suffix, juce::Colour accent);
     juce::ToggleButton* addToggle (juce::Component& parent, int paramIndex, const juce::String& text, juce::Colour accent);
     void addCombo (juce::Component& parent, juce::ComboBox&, int paramIndex, std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment>& att);
@@ -141,17 +162,17 @@ private:
     juce::TextButton mapButton { "SETTINGS" };
 
     std::vector<std::unique_ptr<Knob>> knobs;
-    Knob *kGain {}, *kAtk {}, *kRel {}, *kGlide {}, *kVibD {}, *kVibR {}, *kVel {}, *kPb {},
+    Knob *kGain {}, *kAtk {}, *kRel {}, *kGlide {}, *kVibD {}, *kVibR {}, *kPb {},
          *kLbLevel {}, *kLbVel {},
-         *kSatDrive {}, *kSatMix {}, *kChRate {}, *kChDepth {}, *kChMix {}, *kWahPos {}, *kWahMix {},
-         *kPhRate {}, *kPhDepth {}, *kPhMix {}, *kDlTime {}, *kDlFb {}, *kDlLvl {}, *kRvSize {}, *kRvLvl {};
+         *kRrAmt {}, *kSatDrive {}, *kSatMix {}, *kWahPos {}, *kWahMix {},
+         *kPorta {}, *kArpOct {}, *kArpGate {}, *kPhRate {}, *kPhDepth {}, *kPhMix {}, *kDlTime {}, *kDlFb {}, *kDlLvl {}, *kRvSize {}, *kRvLvl {};
 
     std::vector<std::unique_ptr<juce::ToggleButton>> toggles;
     std::vector<std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>> toggleAtts;
-    juce::ToggleButton *tMono {}, *tLegato {}, *tSat {}, *tCh {}, *tWah {}, *tPh {};
+    juce::ToggleButton *tMono {}, *tLegato {}, *tVel {}, *tPorta {}, *tArp {}, *tArpHold {}, *tSat {}, *tWah {}, *tPh {};
 
-    juce::ComboBox maqamBox, rootBox, modeBox;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> maqamAtt, rootAtt, modeAtt;
+    juce::ComboBox maqamBox, rootBox, modeBox, arpModeBox, arpRateBox, rrBox;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> maqamAtt, rootAtt, modeAtt, arpModeAtt, arpRateAtt, rrAtt;
 
     std::array<std::unique_ptr<NoteKey>, 12> keys;     // indexed by pitch class 0..11 (C..B)
 
@@ -162,13 +183,22 @@ private:
     juce::ShapeButton prevB { "prevB", neon::magenta, neon::magenta.brighter (0.4f), neon::magenta.darker (0.3f) };
     juce::ShapeButton nextB { "nextB", neon::magenta, neon::magenta.brighter (0.4f), neon::magenta.darker (0.3f) };
     juce::TextButton renameButton { "RENAME" };
+    juce::TextButton minusBtn { "-" }, plusBtn { "+" }, cancelBtn { "CANCEL" };
+    void stepRoot (int d);
     juce::TextButton addButton { "ADD FOLDER" };
     juce::Label info;
     std::unique_ptr<juce::FileChooser> chooser;
 
+    WheelView pitchWheel { [this] { return proc.getBend(); }, true, neon::cyan };
+    WheelView modWheelView { [this] { return proc.getModWheel(); }, false, neon::amber };
+    WheelView expWheel { [this] { return proc.getExpr(); }, false, neon::green };
+    juce::Slider pbBox;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> pbAtt;
+    juce::Rectangle<int> pWheels;
+
     juce::Image bgImage;
     juce::Rectangle<int> pageRect, lcdA, lcdM, lcdA2, lcdB2;
-    juce::Rectangle<int> pVoice, pMaqam, pSat, pCh, pWah, pPh, pDelay, pReverb, pLayer;
+    juce::Rectangle<int> pVoice, pMaqam, pSat, pWah, pPh, pDelay, pReverb, pLayer, pVar, pArp;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (NayAudioProcessorEditor)
 };
