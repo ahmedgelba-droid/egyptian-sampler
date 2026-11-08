@@ -74,6 +74,58 @@ void NeonLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w, 
     g.fillPath (p);
 }
 
+void NeonLookAndFeel::drawLinearSlider (juce::Graphics& g, int x, int y, int w, int h, float pos, float minPos, float maxPos,
+                                        juce::Slider::SliderStyle style, juce::Slider& s)
+{
+    if (style != juce::Slider::LinearVertical)
+    {
+        juce::LookAndFeel_V4::drawLinearSlider (g, x, y, w, h, pos, minPos, maxPos, style, s);
+        return;
+    }
+
+    const auto accent = s.findColour (juce::Slider::trackColourId);
+    const float cx = (float) x + (float) w * 0.5f;
+    const float top = (float) y + 12.0f, bot = (float) y + (float) h - 12.0f;
+
+    // scale ticks
+    g.setColour (neon::dim.withAlpha (0.55f));
+    for (int i = 0; i <= 10; ++i)
+    {
+        const float ty = bot - (bot - top) * (float) i / 10.0f;
+        const float len = (i % 5 == 0) ? 12.0f : 7.0f;
+        g.drawLine (cx - 20.0f - len, ty, cx - 20.0f, ty, 1.0f);
+        g.drawLine (cx + 20.0f, ty, cx + 20.0f + len, ty, 1.0f);
+    }
+
+    // groove
+    juce::Rectangle<float> groove (cx - 5.0f, top - 4.0f, 10.0f, bot - top + 8.0f);
+    g.setColour (juce::Colour (0xff02050a));
+    g.fillRoundedRectangle (groove, 5.0f);
+    g.setColour (juce::Colour (0xffb8863a));
+    g.drawRoundedRectangle (groove, 5.0f, 1.5f);
+
+    const float py = juce::jlimit (top, bot, pos);
+    juce::Rectangle<float> fill (cx - 3.0f, py, 6.0f, bot - py + 2.0f);
+    g.setColour (accent.withAlpha (0.30f));
+    g.fillRoundedRectangle (fill.expanded (3.0f, 0.0f), 4.0f);
+    g.setColour (accent);
+    g.fillRoundedRectangle (fill, 3.0f);
+
+    // gold fader cap
+    juce::Rectangle<float> cap (cx - 21.0f, py - 12.0f, 42.0f, 24.0f);
+    g.setColour (juce::Colours::black.withAlpha (0.6f));
+    g.fillRoundedRectangle (cap.translated (0.0f, 2.5f), 5.0f);
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xfff5d884), cap.getX(), cap.getY(),
+                                             juce::Colour (0xff6e4a14), cap.getX(), cap.getBottom(), false));
+    g.fillRoundedRectangle (cap, 5.0f);
+    g.setColour (juce::Colour (0xff2b1807));
+    g.drawRoundedRectangle (cap, 5.0f, 1.2f);
+    g.setColour (juce::Colour (0xff2b1807));
+    g.fillRect (cap.getX() + 5.0f, cap.getCentreY() - 1.0f, cap.getWidth() - 10.0f, 2.0f);
+    g.setColour (accent);
+    g.fillRect (cap.getX() + 5.0f, cap.getCentreY() + 2.0f, cap.getWidth() - 10.0f, 1.5f);
+}
+
 void NeonLookAndFeel::drawToggleButton (juce::Graphics& g, juce::ToggleButton& b, bool hl, bool)
 {
     const auto accent = b.findColour (juce::ToggleButton::tickColourId);
@@ -743,6 +795,16 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     tDuoMute = addToggle (mixer, P_duoMute, "MUTE", cr);
     kMaster  = addKnob (mixer, P_master, "MASTER LEVEL", 1, "dB", pp);
 
+    auto mkFader = [] (Knob* k, juce::Colour col)
+    {
+        k->slider.setSliderStyle (juce::Slider::LinearVertical);
+        k->slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 76, 16);
+        k->slider.setColour (juce::Slider::trackColourId, col);
+        k->label.setVisible (false);
+    };
+    mkFader (kMainLvl, tq);  mkFader (kDuoLvl, gd);  mkFader (kSatMix, gd);  mkFader (kWahMix, pp);
+    mkFader (kPhMix, lp);    mkFader (kDlLvl, tq);   mkFader (kRvLvl, cr);    mkFader (kMaster, pp);
+
     // ---- browse page ----
     searchBox.setTextToShowWhenEmpty ("search by name...", neon::dim);
     searchBox.setColour (juce::TextEditor::backgroundColourId, juce::Colour (0xff070c16));
@@ -878,23 +940,42 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     mixer.onPaint = [this] (juce::Graphics& g)
     {
         g.drawImageAt (bgImage, -mixer.getX(), -mixer.getY());
-        drawPanel (g, pMixMain, "MAIN", neon::cyan);
-        drawPanel (g, pMixDuo, "DUO", neon::amber);
-        drawPanel (g, pMixMaster, "MASTER", neon::green);
-        drawPanel (g, pSat, "KRONOS", neon::amber);
-        drawPanel (g, pWah, "WAH", neon::green);
-        drawPanel (g, pPh, "PHASER", neon::violet);
-        drawPanel (g, pDelay, "DELAY", neon::cyan);
-        drawPanel (g, pReverb, "REVERB", neon::magenta);
+
+        const char* titles[8] = { "MAIN", "DUO", "KRONOS", "WAH", "PHASER", "DELAY", "REVERB", "MASTER" };
+        const juce::Colour cols[8] = { neon::cyan, neon::amber, neon::amber, neon::green, neon::violet, neon::cyan, neon::magenta, neon::green };
+        for (int i = 0; i < 8; ++i)
+            drawPanel (g, mixStrip[i], titles[i], cols[i]);
 
         const int a = proc.getActiveGroup(), d = proc.getDuoGroup();
-        g.setFont (uiFont (13.0f));
+        g.setFont (uiFont (10.5f, false));
         g.setColour (neon::text);
-        g.drawText (a >= 0 ? proc.getGroupName (a) : juce::String ("NO INSTRUMENT"), pMixMain.getX() + 10, pMixMain.getY() + 28, pMixMain.getWidth() - 20, 18, juce::Justification::centred, true);
-        g.drawText (d >= 0 ? proc.getGroupName (d) : juce::String ("OFF  (choose one in BROWSE)"), pMixDuo.getX() + 10, pMixDuo.getY() + 28, pMixDuo.getWidth() - 20, 18, juce::Justification::centred, true);
+        g.drawText (a >= 0 ? proc.getGroupName (a) : juce::String ("NO INSTRUMENT"), mixStrip[0].getX() + 6, 24, mixStrip[0].getWidth() - 12, 14, juce::Justification::centred, true);
+        g.drawText (d >= 0 ? proc.getGroupName (d) : juce::String ("OFF"), mixStrip[1].getX() + 6, 24, mixStrip[1].getWidth() - 12, 14, juce::Justification::centred, true);
+
+        // master level meter
+        {
+            const auto& s = mixStrip[7];
+            for (int ch = 0; ch < 2; ++ch)
+            {
+                const float lv = proc.getMeter (ch);
+                const float db = 20.0f * std::log10 (juce::jmax (1.0e-4f, lv));
+                const float fr = juce::jlimit (0.0f, 1.0f, (db + 60.0f) / 66.0f);
+                const float bx = (float) s.getX() + 88.0f + (float) ch * 11.0f, by = 80.0f, bh = 268.0f;
+                g.setColour (juce::Colour (0xff02050a));
+                g.fillRoundedRectangle (bx, by, 8.0f, bh, 3.0f);
+                const float fh2 = bh * fr;
+                juce::ColourGradient cg (juce::Colour (0xffff4a3a), 0.0f, by, neon::green, 0.0f, by + bh, false);
+                cg.addColour (0.2, neon::amber);
+                g.setGradientFill (cg);
+                g.fillRoundedRectangle (bx, by + bh - fh2, 8.0f, fh2, 3.0f);
+                g.setColour (juce::Colour (0xffb8863a));
+                g.drawRoundedRectangle (bx, by, 8.0f, bh, 3.0f, 1.0f);
+            }
+        }
+
         g.setColour (neon::dim);
         g.setFont (uiFont (10.5f, false));
-        g.drawText ("Pan: center = unity gain.  Right-click any knob = MIDI learn.", 0, 474, 968, 14, juce::Justification::centredLeft, false);
+        g.drawText ("Pan: center = unity gain.  Right-click any knob / fader = MIDI learn.", 0, 566, 968, 14, juce::Justification::centredLeft, false);
     };
 
     info.setColour (juce::Label::textColourId, neon::dim);
@@ -1148,6 +1229,7 @@ void NayAudioProcessorEditor::timerCallback()
     if ((++tick & 1) == 0)
     {
         if (page.isVisible()) page.repaint();
+        if (mixer.isVisible()) mixer.repaint();
         if (settings.isVisible()) mapView.repaint();
     }
 }
@@ -1447,65 +1529,56 @@ void NayAudioProcessorEditor::rebuildBackground()
     bgImage = juce::Image (juce::Image::ARGB, w, h, true);
     juce::Graphics g (bgImage);
 
-    // night-blue stone body
-    g.setGradientFill (juce::ColourGradient (neon::bg1, 0.0f, 0.0f, neon::bg0, 0.0f, (float) h, false));
+    // deep black body with a faint grid and glowing circuit traces
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff0b1424), 0.0f, 0.0f, juce::Colour (0xff04060a), 0.0f, (float) h, false));
     g.fillAll();
 
-    // faint eight-point star lattice
-    g.setColour (neon::amber.withAlpha (0.05f));
-    for (int y = 0; y < h + 48; y += 48)
-        for (int x = 0; x < w + 48; x += 48)
-        {
-            juce::Path s;
-            s.addStar ({ (float) x, (float) y }, 8, 9.0f, 21.0f);
-            g.strokePath (s, juce::PathStrokeType (1.0f));
-        }
+    g.setColour (neon::cyan.withAlpha (0.045f));
+    for (int x = 0; x < w; x += 40) g.drawVerticalLine (x, 0.0f, (float) h);
+    for (int y = 0; y < h; y += 40) g.drawHorizontalLine (y, 0.0f, (float) w);
 
-    // stone grain
-    juce::Random rnd (7);
-    for (int i = 0; i < 5000; ++i)
+    juce::Random cr (11);
+    for (int i = 0; i < 40; ++i)
     {
-        g.setColour ((i & 1 ? juce::Colours::white : juce::Colours::black).withAlpha (0.035f));
+        const float x0 = (float) cr.nextInt (w), y0 = (float) cr.nextInt (h);
+        const float x1 = x0 + 30.0f + (float) cr.nextInt (90), y1 = y0 + 20.0f + (float) cr.nextInt (50);
+        juce::Path p;
+        p.startNewSubPath (x0, y0);
+        p.lineTo (x1, y0);
+        p.lineTo (x1, y1);
+        g.setColour (neon::cyan.withAlpha (0.09f));
+        g.strokePath (p, juce::PathStrokeType (1.0f));
+        g.setColour (neon::cyan.withAlpha (0.25f));
+        g.fillEllipse (x1 - 2.5f, y1 - 2.5f, 5.0f, 5.0f);
+    }
+
+    juce::Random rnd (7);
+    for (int i = 0; i < 3000; ++i)
+    {
+        g.setColour ((i & 1 ? juce::Colours::white : juce::Colours::black).withAlpha (0.03f));
         g.fillRect (rnd.nextInt (w), rnd.nextInt (h), 1 + rnd.nextInt (2), 1);
     }
 
-    // ---- header: dusk sky over the Nile + pyramids ----
+    // ---- header band with a stepped pyramid ----
     const int fx = 30, hy = 70, fh = 36;
-    juce::Rectangle<float> sky ((float) fx, 0.0f, (float) (w - 2 * fx), (float) hy);
-    juce::ColourGradient sg (juce::Colour (0xff0d1830), 0.0f, 0.0f, juce::Colour (0xffd0782c), 0.0f, (float) hy, false);
-    sg.addColour (0.55, juce::Colour (0xff3a3a63));
-    g.setGradientFill (sg);
-    g.fillRect (sky);
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xffffb35c).withAlpha (0.45f), (float) w * 0.66f, (float) hy,
-                                             juce::Colours::transparentBlack, (float) w * 0.66f, 4.0f, true));
-    g.fillRect (sky);
-
-    g.setColour (juce::Colour (0xff0a1020));
-    for (int k = 0; k < 2; ++k)
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff0e1a2e), 0.0f, 0.0f, juce::Colour (0xff05080f), 0.0f, (float) hy, false));
+    g.fillRect (fx, 0, w - 2 * fx, hy);
+    g.setColour (neon::cyan.withAlpha (0.55f));
+    g.drawHorizontalLine (hy - 2, (float) fx, (float) (w - fx));
+    for (int k = 0; k < 5; ++k)
     {
-        const float px = (float) w * (0.70f + 0.07f * (float) k), sz = k == 0 ? 54.0f : 36.0f;
-        juce::Path pyr;
-        pyr.addTriangle (px - sz, (float) hy, px + sz, (float) hy, px, (float) hy - sz * 0.8f);
-        g.fillPath (pyr);
-    }
-    for (int x = fx + 330; x < w - fx - 20; x += 11)             // skyline
-        if (x < (int) ((float) w * 0.60f) || x > (int) ((float) w * 0.82f))
-            g.fillRect (x, hy - 6 - (x * 7919 % 13), 7, 20);
-    for (int k = 0; k < 3; ++k)                                  // palms
-    {
-        const float px = (float) fx + 380.0f + (float) k * 90.0f;
-        g.drawLine (px, (float) hy, px + 2.0f, (float) hy - 26.0f, 2.0f);
-        for (int f = -2; f <= 2; ++f)
-            g.drawLine (px + 2.0f, (float) hy - 26.0f, px + 2.0f + (float) f * 7.0f, (float) hy - 26.0f + std::abs ((float) f) * 3.0f, 1.5f);
+        const int sw = 110 - k * 20;
+        g.setGradientFill (juce::ColourGradient (juce::Colour (0xfff5d884), 0.0f, (float) (k * 6), juce::Colour (0xff8a5e1c), 0.0f, (float) (k * 6 + 6), false));
+        g.fillRect (w / 2 - sw / 2, k * 6, sw, 6);
     }
 
     // ---- bronze carved frame: sides + footer ----
     auto bronze = [&] (juce::Rectangle<int> r, bool vertical)
     {
-        juce::ColourGradient bg (juce::Colour (0xff6a3d10), (float) r.getX(), (float) r.getY(),
-                                 juce::Colour (0xff6a3d10), vertical ? (float) r.getRight() : (float) r.getX(),
+        juce::ColourGradient bg (juce::Colour (0xff7a5418), (float) r.getX(), (float) r.getY(),
+                                 juce::Colour (0xff7a5418), vertical ? (float) r.getRight() : (float) r.getX(),
                                  vertical ? (float) r.getY() : (float) r.getBottom(), false);
-        bg.addColour (0.5, juce::Colour (0xffc58a38));
+        bg.addColour (0.5, juce::Colour (0xfff0cf74));
         g.setGradientFill (bg);
         g.fillRect (r);
         for (int i = 0; i < r.getWidth() * r.getHeight() / 40; ++i)
@@ -1551,13 +1624,19 @@ void NayAudioProcessorEditor::rebuildBackground()
 void NayAudioProcessorEditor::drawPanel (juce::Graphics& g, juce::Rectangle<int> ri, const juce::String& title, juce::Colour accent)
 {
     auto r = ri.toFloat();
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff1b2c4d).withAlpha (0.92f), 0.0f, r.getY(),
-                                             juce::Colour (0xff0a1222).withAlpha (0.95f), 0.0f, r.getBottom(), false));
-    g.fillRoundedRectangle (r, 8.0f);
-    g.setColour (juce::Colours::white.withAlpha (0.05f));
-    g.drawRoundedRectangle (r.reduced (2.5f), 6.0f, 1.0f);
-    g.setColour (juce::Colour (0xffb8863a).withAlpha (0.75f));
-    g.drawRoundedRectangle (r.reduced (0.5f), 8.0f, 1.5f);
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff121e32).withAlpha (0.96f), 0.0f, r.getY(),
+                                             juce::Colour (0xff060a12).withAlpha (0.97f), 0.0f, r.getBottom(), false));
+    g.fillRoundedRectangle (r, 9.0f);
+    g.setColour (accent.withAlpha (0.30f));
+    g.drawRoundedRectangle (r.reduced (3.5f), 7.0f, 1.0f);
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xfff3d27a), r.getX(), r.getY(), juce::Colour (0xff6b4a14), r.getRight(), r.getBottom(), false));
+    g.drawRoundedRectangle (r.reduced (1.0f), 9.0f, 2.2f);
+    for (auto p : { r.getTopLeft(), r.getTopRight(), r.getBottomLeft(), r.getBottomRight() })
+    {
+        const float dx = p.x < r.getCentreX() ? 8.0f : -8.0f, dy = p.y < r.getCentreY() ? 8.0f : -8.0f;
+        g.setColour (juce::Colour (0xffd9aa4a));
+        g.fillEllipse (p.x + dx - 2.5f, p.y + dy - 2.5f, 5.0f, 5.0f);
+    }
 
     g.setColour (accent);
     const float L = 11.0f;
@@ -1721,33 +1800,6 @@ void NayAudioProcessorEditor::resized()
         keys[(size_t) i]->setBounds (250 + (int) (px[i] * 100.0f) + 15, pMaqam.getY() + (sharp ? 20 : 84), 70, 62);
     }
 
-    const int counts[5] = { 2, 2, 3, 3, 2 };
-    int sum = 0;
-    for (int c : counts) sum += c * 72 + 14;
-    const int gap = (968 - sum) / 4;
-    const int fy = 326, fh = 132;
-
-    juce::Rectangle<int>* fx[5] = { &pSat, &pWah, &pPh, &pDelay, &pReverb };
-    int x = 0;
-    for (int i = 0; i < 5; ++i)
-    {
-        const int w = counts[i] * 72 + 14;
-        *fx[i] = { x, fy, w, fh };
-        x += w + gap;
-    }
-
-    auto knobArea = [&] (const juce::Rectangle<int>& p, int n) { return juce::Rectangle<int> (p.getX() + 7, p.getY() + 22, n * 72, 80); };
-    layoutRow (knobArea (pSat, 2),    { kSatDrive, kSatMix });
-    layoutRow (knobArea (pWah, 2),    { kWahPos, kWahMix });
-    layoutRow (knobArea (pPh, 3),     { kPhRate, kPhDepth, kPhMix });
-    layoutRow (knobArea (pDelay, 3),  { kDlTime, kDlFb, kDlLvl });
-    layoutRow (knobArea (pReverb, 2), { kRvSize, kRvLvl });
-
-    auto togArea = [] (const juce::Rectangle<int>& p) { return juce::Rectangle<int> (p.getX() + 8, p.getBottom() - 28, p.getWidth() - 16, 22); };
-    tSat->setBounds (togArea (pSat));
-    tWah->setBounds (togArea (pWah));
-    tPh->setBounds (togArea (pPh));
-
     // ================= settings page (local coords) =================
     lcdA2 = { 0, 0, 600, 60 };
     prevA2.setBounds (lcdA2.getX() + 8, 16, 20, 28);
@@ -1784,13 +1836,28 @@ void NayAudioProcessorEditor::resized()
     delPresetBtn.setBounds (754, 272, 214, 30);
     browseInfo.setBounds (754, 330, 214, 228);
 
-    // ================= mixer page =================
-    pMixMain   = { 0, 0, 300, 316 };
-    pMixDuo    = { 310, 0, 300, 316 };
-    pMixMaster = { 620, 0, 348, 316 };
-    layoutRow ({ pMixMain.getX() + 8, 56, 284, 190 }, { kMainLvl, kMainPan });
-    layoutRow ({ pMixDuo.getX() + 8, 56, 284, 190 }, { kDuoLvl, kDuoPan });
-    layoutRow ({ pMixMaster.getX() + 8, 56, 332, 190 }, { kMaster });
-    tMainMute->setBounds (pMixMain.getX() + 20, 266, 120, 26);
-    tDuoMute->setBounds (pMixDuo.getX() + 20, 266, 120, 26);
+    // ================= mixer page: 8 channel strips =================
+    const int sw = 117, sg = 4;
+    for (int i = 0; i < 8; ++i)
+        mixStrip[i] = { i * (sw + sg), 0, sw, 560 };
+
+    auto placeFader = [&] (Knob* k, int i)
+    {
+        const int fxp = i == 7 ? mixStrip[i].getX() + 6 : mixStrip[i].getX() + (sw - 76) / 2;
+        k->slider.setBounds (fxp, 68, 76, 292);
+    };
+    auto placeKnob = [&] (Knob* k, int i, int slot)
+    {
+        layoutRow ({ mixStrip[i].getX() + 14, 366 + slot * 92, sw - 28, 90 }, { k });
+    };
+    auto placeTog = [&] (juce::ToggleButton* t, int i) { t->setBounds (mixStrip[i].getX() + 8, 40, sw - 16, 22); };
+
+    placeTog (tMainMute, 0); placeFader (kMainLvl, 0); placeKnob (kMainPan, 0, 0);
+    placeTog (tDuoMute, 1);  placeFader (kDuoLvl, 1);  placeKnob (kDuoPan, 1, 0);
+    placeTog (tSat, 2);      placeFader (kSatMix, 2);  placeKnob (kSatDrive, 2, 0);
+    placeTog (tWah, 3);      placeFader (kWahMix, 3);  placeKnob (kWahPos, 3, 0);
+    placeTog (tPh, 4);       placeFader (kPhMix, 4);   placeKnob (kPhRate, 4, 0); placeKnob (kPhDepth, 4, 1);
+    placeFader (kDlLvl, 5);  placeKnob (kDlTime, 5, 0); placeKnob (kDlFb, 5, 1);
+    placeFader (kRvLvl, 6);  placeKnob (kRvSize, 6, 0);
+    placeFader (kMaster, 7);
 }

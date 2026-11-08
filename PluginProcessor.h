@@ -14,6 +14,7 @@ struct NaySample
     double sampleRate = 44100.0;
     juce::AudioBuffer<float> data;
     std::atomic<int> root { 60 }, lo { 0 }, hi { 127 }, vlo { 1 }, vhi { 127 };
+    int loopStart = -1, loopEnd = -1;      // loop points read from the WAV 'smpl' chunk (-1 = none)
 };
 
 using NayBank = std::vector<std::shared_ptr<NaySample>>;
@@ -102,6 +103,7 @@ public:
     juce::String getGroupCategory (int i) const { return groups[(size_t) i].category; }
     void renameGroup (int index, const juce::String& newName);
     void resetZones (int index);                  // back to automatic mapping
+    float getMeter (int ch) const { return meter[ch & 1].load(); }
     int getNumGroups() const { return (int) groups.size(); }
     juce::String getGroupName (int i) const { return groups[(size_t) i].name; }
     int getActiveGroup() const { return activeGroup; }
@@ -226,6 +228,8 @@ private:
     NaySample* lastPicked = nullptr;
     NaySample* lastPickedB = nullptr;
     float mixAL = 1.f, mixAR = 1.f, mixBL = 1.f, mixBR = 1.f, pMaster = 1.f;      // last sample used (compared only, never dereferenced)
+    float satXo[2][3][2] {};              // KRONOS crossover states [channel][split][pole]
+    std::atomic<float> meter[2] { 0.0f, 0.0f };
     int curShift = 0;                     // transpose+octave (mod 12): the microtonal key tuning moves with it
     int sentNote[128] {};                 // note actually played for each input key (0 = none, -1 = dropped, else note+1)
     std::atomic<int> learnTarget { -1 }, expCC { 11 }, doneCC { 0 }, doneTarget { -1 }, doneCount { 0 };

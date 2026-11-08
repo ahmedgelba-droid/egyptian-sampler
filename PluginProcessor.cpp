@@ -248,6 +248,20 @@ std::shared_ptr<const NayBank> NayAudioProcessor::loadBank (const juce::File& fo
         for (int ch = 0; ch < chans; ++ch)
             s->data.addFrom (0, 0, tmp, ch, 0, len, 1.0f / (float) chans);
 
+        {
+            const int nl = reader->metadataValues.getValue ("NumSampleLoops", "0").getIntValue();
+            if (nl > 0)
+            {
+                const int ls = reader->metadataValues.getValue ("Loop0Start", "-1").getIntValue();
+                const int le = reader->metadataValues.getValue ("Loop0End", "-1").getIntValue();
+                if (ls >= 0 && le > ls + 8 && le < len)
+                {
+                    s->loopStart = ls;
+                    s->loopEnd = le;
+                }
+            }
+        }
+
         newBank->push_back (s);
     }
 
@@ -505,7 +519,7 @@ std::shared_ptr<NaySample> NayAudioProcessor::pickSample (const NayBank* b, int 
     for (int dir = -1; dir <= 1; dir += 2)
     {
         int found = 0;
-        for (int r = bestRoot + dir; r >= 0 && r <= 127 && found < 2 && std::abs (r - bestRoot) <= 2; r += dir)   // neighbours within 2 semitones
+        for (int r = bestRoot + dir; r >= 0 && r <= 127 && found < 1 && std::abs (r - bestRoot) <= 1; r += dir)   // only the closest neighbour (within 1 semitone)
             if (present[r]) { allowed[r] = true; ++found; }
     }
 
@@ -691,7 +705,7 @@ void NayAudioProcessor::renderVoice (NayVoice& v, juce::AudioBuffer<float>& buf,
     const float lg[2] = { 1.0f, 1.0f };
 
     const float* src[2] = { nullptr, nullptr };
-    double lEnd[2] = { 0, 0 }, lStart[2] = { 0, 0 }, rateBase[2] = { 0, 0 };
+    double lEnd[2] = { 0, 0 }, lStart[2] = { 0, 0 }, rateBase[2] = { 0, 0 }, xfl[2] = { 0, 0 };
     bool act[2] = { false, false };
 
     for (int k = 0; k < 2; ++k)
@@ -702,7 +716,14 @@ void NayAudioProcessor::renderVoice (NayVoice& v, juce::AudioBuffer<float>& buf,
         const int len = ss[k]->data.getNumSamples();
         src[k] = ss[k]->data.getReadPointer (0);
         lEnd[k] = (double) len - 1.0;
-        lStart[k] = juce::jmin (lEnd[k] - 1.0, (double) len * 0.5); // sustain loop = second half
+        lStart[k] = juce::jmin (lEnd[k] - 1.0, (double) len * 0.5); // default sustain loop = second half
+        if (ss[k]->loopStart >= 0)                                   // loop points saved inside the WAV
+        {
+            lStart[k] = (double) ss[k]->loopStart;
+            lEnd[k] = juce::jmin ((double) (ss[k]->loopEnd + 1), (double) len - 1.0);
+        }
+        // short equal-power style cross-fade at the loop point (no click)
+        xfl[k] = juce::jmax (0.0, juce::jmin (1024.0, juce::jmin ((lEnd[k] - lStart[k]) * 0.4, lStart[k])));
         rateBase[k] = (ss[k]->sampleRate / sr) * std::exp2 (-(double) ss[k]->root.load() / 12.0);
         act[k] = true;
     }
@@ -715,7 +736,7 @@ void NayAudioProcessor::renderVoice (NayVoice& v, juce::AudioBuffer<float>& buf,
 
     const float gt = pGlide;
     const double glideCoef = gt < 1.0f ? 1.0 : 1.0 - std::exp (-1.0 / ((double) gt * 0.001 * sr));
-    const double depthCents = juce::jmin (100.0, (double) pVibDepth + (double) modWheel * 50.0);
+    const double depthCents = juce::jmin (100.0, (double) pVibDepth * (double) modWheel);   // vibrato only through the mod wheel; VIB DEPTH = amount at full wheel
     const double bendSemis = (double) bendNorm * (double) pPbRange;
     const float lpA = 1.0f - std::exp (-juce::MathConstants<float>::twoPi * juce::jmin (v.velFc * (0.2f + 0.8f * exprSm), 0.45f * (float) sr) / (float) sr);
 
@@ -744,7 +765,16 @@ void NayAudioProcessor::renderVoice (NayVoice& v, juce::AudioBuffer<float>& buf,
 
             const int i0 = (int) p;
             const float frac = (float) (p - (double) i0);
-            const float smp = (src[k][i0] + frac * (src[k][i0 + 1] - src[k][i0])) * lg[k];
+            float smp = (src[k][i0] + frac * (src[k][i0 + 1] - src[k][i0])) * lg[k];
+            if (xfl[k] > 1.0 && p > lEnd[k] - xfl[k])
+            {
+                const double q = p - (lEnd[k] - lStart[k]);          // same spot one loop earlier
+                const int j0 = (int) q;
+                const float jf = (float) (q - (double) j0);
+                const float s2 = (src[k][j0] + jf * (src[k][j0 + 1] - src[k][j0])) * lg[k];
+                const float t = (float) ((p - (lEnd[k] - xfl[k])) / xfl[k]);
+                smp = smp * (1.0f - t) + s2 * t;   // linear: the two signals are the same waveform one loop apart
+            }
             if (k == 0) mA = smp; else mB = smp;
 
             p += ratio * rateBase[k];
@@ -791,27 +821,36 @@ void NayAudioProcessor::processSaturation (juce::AudioBuffer<float>& buffer)
     if (! pSatOn)
         return;
 
-    // KRONOS = "electric violin lead" voicing for ANY source (even a plain sine): a leveller adds sustain, a soft
-    // tanh stage adds smooth harmonics, a presence band (1.8-4.2 kHz) gives the shine, a little low warmth is kept,
-    // and the output is level-matched so the instrument never gets louder.
+    // KRONOS = 4-band "Power Overdrive" (multiband tube-style saturation, like the Saturn preset the user showed):
+    // a leveller adds sustain, the signal is split at 250 Hz / 1.4 kHz / 4.5 kHz, every band gets its own soft
+    // tanh stage (drive per band: low 0.45, low-mid 1.0, high-mid 0.85, top 0.8), the bands are summed with a small
+    // tone balance, and the result is level-matched to the dry signal.
     const float drive = pSatDrive, mix = pSatMix;
     const float fs = (float) sr;
     const float twoPi = juce::MathConstants<float>::twoPi;
-    const float k = 1.0f + drive * 6.0f;
     const float bias = 0.06f * drive;
     const float tb = std::tanh (bias);
-    const float aHp   = 1.0f - std::exp (-twoPi * 140.0f / fs);
-    const float aLow  = 1.0f - std::exp (-twoPi * 220.0f / fs);
-    const float aB1   = 1.0f - std::exp (-twoPi * 1800.0f / fs);
-    const float aB2   = 1.0f - std::exp (-twoPi * juce::jmin (4200.0f, 0.4f * fs) / fs);
-    const float aTop  = 1.0f - std::exp (-twoPi * juce::jmin (9500.0f, 0.45f * fs) / fs);
+    const float aHp   = 1.0f - std::exp (-twoPi * 90.0f / fs);
+    const float aTop  = 1.0f - std::exp (-twoPi * juce::jmin (11000.0f, 0.45f * fs) / fs);
     const float aAtt  = 1.0f - std::exp (-1.0f / (0.004f * fs));
     const float aRel  = 1.0f - std::exp (-1.0f / (0.18f * fs));
     const float aEnv  = 1.0f - std::exp (-1.0f / (0.05f * fs));
     const float aGain = 1.0f - std::exp (-1.0f / (0.02f * fs));
-    const float sus = 0.55f * drive;
+    const float sus = 0.5f * drive;
 
-    auto shape = [=] (float x) { return std::tanh (k * x + bias) - tb; };
+    const float splitHz[3] = { 250.0f, 1400.0f, 4500.0f };
+    float ac[3];
+    for (int i = 0; i < 3; ++i)
+        ac[i] = 1.0f - std::exp (-twoPi * juce::jmin (splitHz[i], 0.45f * fs) / fs);
+
+    const float mult[4] = { 0.45f, 1.0f, 0.85f, 0.8f };
+    const float tone[4] = { 0.95f, 1.0f, 1.12f, 1.0f };
+    float kb[4], norm[4];
+    for (int b = 0; b < 4; ++b)
+    {
+        kb[b] = 1.0f + drive * 9.0f * mult[b];
+        norm[b] = tone[b] / std::pow (kb[b], 0.7f);
+    }
 
     const int n = buffer.getNumSamples();
     const int chans = juce::jmin (buffer.getNumChannels(), 2);
@@ -825,21 +864,29 @@ void NayAudioProcessor::processSaturation (juce::AudioBuffer<float>& buffer)
             const float xd = d[i];
 
             satHpS[ch] += aHp * (xd - satHpS[ch]);
-            float x = xd - satHpS[ch];                       // no mud going into the drive
+            float x = xd - satHpS[ch];
 
             const float ax = std::abs (x);
             satLev[ch] += (ax > satLev[ch] ? aAtt : aRel) * (ax - satLev[ch]);
             x *= juce::jlimit (1.0f, 8.0f, std::pow (0.2f / (satLev[ch] + 1.0e-4f), sus));   // sustain
 
-            const float xm = 0.5f * (satXPrev[ch] + x);
-            satXPrev[ch] = x;
-            float y = 0.5f * (shape (xm) + shape (x));
+            // 4-band split (complementary, so the bands add back up to the input)
+            float rest = x, band[4];
+            for (int s2 = 0; s2 < 3; ++s2)
+            {
+                float& p1 = satXo[ch][s2][0];
+                float& p2 = satXo[ch][s2][1];
+                p1 += ac[s2] * (rest - p1);
+                p2 += ac[s2] * (p1 - p2);
+                band[s2] = p2;
+                rest -= p2;
+            }
+            band[3] = rest;
 
-            satLo[ch] += aLow * (y - satLo[ch]);
-            satHi[ch] += aB1 * (y - satHi[ch]);
-            satLp2[ch] += aB2 * (y - satLp2[ch]);
-            y += satLo[ch] * (0.25f * drive);                // warmth
-            y += (satLp2[ch] - satHi[ch]) * (0.7f * drive);  // presence / shine
+            float y = 0.0f;
+            for (int b = 0; b < 4; ++b)
+                y += (std::tanh (kb[b] * band[b] + bias) - tb) * norm[b];
+            y *= 1.6f;
 
             satLp[ch] += aTop * (y - satLp[ch]);             // smooth the very top
             y = satLp[ch];
@@ -1302,6 +1349,11 @@ void NayAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     processDelay (buffer);
     processReverb (buffer);
     buffer.applyGain (pMaster);
+    for (int ch = 0; ch < 2; ++ch)
+    {
+        const float pk = ch < buffer.getNumChannels() ? buffer.getMagnitude (ch, 0, buffer.getNumSamples()) : 0.0f;
+        meter[ch].store (juce::jmax (pk, meter[ch].load() * 0.92f));
+    }
 }
 
 //==============================================================================
