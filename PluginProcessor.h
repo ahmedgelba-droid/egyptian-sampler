@@ -34,7 +34,7 @@ struct NayVoice
     std::shared_ptr<NaySample> sa, sb;    // layer A / layer B sample
     juce::ADSR adsr;
     double posA = 0.0, posB = 0.0, pitch = 60.0, target = 60.0, vibPhase = 0.0;
-    float velGain = 1.0f;
+    float velGain = 1.0f, velFc = 18000.f, lp = 0.f;
     int note = -1;
     bool gate = false;
     juce::uint64 age = 0;
@@ -49,6 +49,7 @@ enum NayParam
     P_satOn, P_satDrive, P_satMix,
     P_wahOn, P_wahPos, P_wahRate, P_wahMix,
     P_phOn, P_phRate, P_phDepth, P_phMix,
+    P_chOn, P_chRate, P_chDepth, P_chMix,
     P_count
 };
 
@@ -58,6 +59,7 @@ public:
     static constexpr int kNumVoices = 8;
     static const char* const paramIds[P_count];
     static juce::StringArray maqamNames();
+    static float maqamOffset (int maqam, int pitchClass, int root);
 
     NayAudioProcessor();
     ~NayAudioProcessor() override = default;
@@ -122,6 +124,8 @@ private:
     void processSaturation (juce::AudioBuffer<float>&);
     void processWah (juce::AudioBuffer<float>&);
     void processPhaser (juce::AudioBuffer<float>&);
+    void processChorus (juce::AudioBuffer<float>&);
+    void applyVelocity (NayVoice&, int vel);
     void processDelay (juce::AudioBuffer<float>&);
     void processReverb (juce::AudioBuffer<float>&);
     double noteTarget (int note) const;
@@ -165,6 +169,12 @@ private:
     double wahPhase = 0.0;
     float phX1[2][4] {}, phY1[2][4] {}, phFb[2] {};
     double phPhase = 0.0;
+    juce::AudioBuffer<float> chBuf;
+    int chWrite = 0;
+    double chPhase = 0.0;
+    float chLp[2] {};
+    bool pChOn = false;
+    float pChRate = 0.8f, pChDepth = 0.6f, pChMix = 0.7f;
 
     juce::AudioBuffer<float> delayBuf;
     int delayWrite = 0;

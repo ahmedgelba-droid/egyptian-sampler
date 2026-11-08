@@ -6,18 +6,19 @@
 #include <memory>
 #include <vector>
 
+// Egyptian palette (names kept from the first version): turquoise, carnelian, lapis, papyrus green, gold.
 namespace neon
 {
-    const juce::Colour bg0     { 0xff04060d };
-    const juce::Colour bg1     { 0xff0a1022 };
-    const juce::Colour panel   { 0xff0b1222 };
-    const juce::Colour cyan    { 0xff00e5ff };
-    const juce::Colour magenta { 0xffff2bd6 };
-    const juce::Colour violet  { 0xff8a63ff };
-    const juce::Colour green   { 0xff3dffa8 };
-    const juce::Colour amber   { 0xffffb800 };
-    const juce::Colour dim     { 0xff6f7fa6 };
-    const juce::Colour text    { 0xffd6e4ff };
+    const juce::Colour bg0     { 0xff0a0805 };
+    const juce::Colour bg1     { 0xff1f1609 };
+    const juce::Colour panel   { 0xff17110a };
+    const juce::Colour cyan    { 0xff2fe0c4 };   // turquoise
+    const juce::Colour magenta { 0xffe2573f };   // carnelian
+    const juce::Colour violet  { 0xff4a86ff };   // lapis
+    const juce::Colour green   { 0xffa6d84f };   // papyrus
+    const juce::Colour amber   { 0xfff0b83c };   // gold
+    const juce::Colour dim     { 0xff9a8a6a };
+    const juce::Colour text    { 0xfff3e6c8 };
 }
 
 class NeonLookAndFeel : public juce::LookAndFeel_V4
@@ -28,25 +29,35 @@ public:
     void drawToggleButton (juce::Graphics&, juce::ToggleButton&, bool highlighted, bool down) override;
     void drawRotarySlider (juce::Graphics&, int x, int y, int width, int height,
                            float sliderPos, float startAngle, float endAngle, juce::Slider&) override;
-    void drawLinearSlider (juce::Graphics&, int x, int y, int width, int height,
-                           float sliderPos, float minSliderPos, float maxSliderPos,
-                           juce::Slider::SliderStyle, juce::Slider&) override;
     void drawButtonBackground (juce::Graphics&, juce::Button&, const juce::Colour&, bool highlighted, bool down) override;
     void drawComboBox (juce::Graphics&, int w, int h, bool isDown, int bx, int by, int bw, int bh, juce::ComboBox&) override;
     juce::Font getComboBoxFont (juce::ComboBox&) override;
     juce::Font getTextButtonFont (juce::TextButton&, int buttonHeight) override;
 };
 
-// Small number box showing a per-note fine tune in cents.
-// Drag up/down to change, double-click toggles 0 <-> -50 (quarter tone flat).
-class CentsBox : public juce::Slider
+// One note button (C..B). Lit when the note is altered (by the maqam or by hand); the value in cents is shown below.
+// Click = quarter-tone flat on/off. Drag up/down = fine tune.
+class NoteKey : public juce::Component, private juce::Timer
 {
 public:
-    explicit CentsBox (juce::RangedAudioParameter& p) : param (p) {}
-    void mouseDoubleClick (const juce::MouseEvent&) override;
+    NoteKey (NayAudioProcessor&, int pitchClass);
+    void paint (juce::Graphics&) override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
 
 private:
-    juce::RangedAudioParameter& param;
+    void timerCallback() override;
+    float maq() const;
+    float user() const;
+    float effective() const { return user() + maq(); }
+    void setUser (float cents);
+
+    NayAudioProcessor& proc;
+    juce::RangedAudioParameter* par = nullptr;
+    int pc;
+    float lastEff = 9999.f, startUser = 0.f;
+    bool dragged = false;
 };
 
 // Kontakt-style mapping editor: key range (x) x velocity range (y) for each sample of a layer.
@@ -85,7 +96,7 @@ private:
     juce::Label rootLabel, fileLabel;
 };
 
-class NayAudioProcessorEditor : public juce::AudioProcessorEditor
+class NayAudioProcessorEditor : public juce::AudioProcessorEditor, private juce::Timer
 {
 public:
     explicit NayAudioProcessorEditor (NayAudioProcessor&);
@@ -108,9 +119,10 @@ private:
         void paint (juce::Graphics& g) override { if (onPaint) onPaint (g); }
     };
 
-    Knob* addKnob (int paramIndex, const char* name, int decimals, const juce::String& suffix, juce::Colour accent);
-    juce::ToggleButton* addToggle (int paramIndex, const juce::String& text, juce::Colour accent);
-    void addCombo (juce::ComboBox&, int paramIndex, std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment>& att);
+    void timerCallback() override { if (page.isVisible()) page.repaint(); }
+    Knob* addKnob (juce::Component& parent, int paramIndex, const char* name, int decimals, const juce::String& suffix, juce::Colour accent);
+    juce::ToggleButton* addToggle (juce::Component& parent, int paramIndex, const juce::String& text, juce::Colour accent);
+    void addCombo (juce::Component& parent, juce::ComboBox&, int paramIndex, std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment>& att);
     void layoutRow (juce::Rectangle<int> area, std::initializer_list<Knob*> ks);
     void drawPanel (juce::Graphics&, juce::Rectangle<int>, const juce::String& title, juce::Colour accent);
     void drawLcd (juce::Graphics&, juce::Rectangle<int>, const juce::String& tag, const juce::String& name,
@@ -124,29 +136,29 @@ private:
     NeonLookAndFeel laf;
     bool built = false;
 
-    Page page;
+    Page page, settings;       // main page / settings page (layers, folders, mapping)
     MapView mapView;
-    bool mapMode = false;
-    juce::TextButton mapButton { "MAPPING" };
+    juce::TextButton mapButton { "SETTINGS" };
 
     std::vector<std::unique_ptr<Knob>> knobs;
     Knob *kGain {}, *kAtk {}, *kRel {}, *kGlide {}, *kVibD {}, *kVibR {}, *kVel {}, *kPb {},
          *kLbLevel {}, *kLbVel {},
-         *kSatDrive {}, *kSatMix {}, *kWahPos {}, *kWahRate {}, *kWahMix {},
+         *kSatDrive {}, *kSatMix {}, *kChRate {}, *kChDepth {}, *kChMix {}, *kWahPos {}, *kWahMix {},
          *kPhRate {}, *kPhDepth {}, *kPhMix {}, *kDlTime {}, *kDlFb {}, *kDlLvl {}, *kRvSize {}, *kRvLvl {};
 
     std::vector<std::unique_ptr<juce::ToggleButton>> toggles;
     std::vector<std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>> toggleAtts;
-    juce::ToggleButton *tMono {}, *tLegato {}, *tSat {}, *tWah {}, *tPh {};
+    juce::ToggleButton *tMono {}, *tLegato {}, *tSat {}, *tCh {}, *tWah {}, *tPh {};
 
     juce::ComboBox maqamBox, rootBox, modeBox;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> maqamAtt, rootAtt, modeAtt;
 
-    std::array<std::unique_ptr<CentsBox>, 12> boxes;   // indexed by pitch class 0..11 (C..B)
-    std::array<std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>, 12> boxAtt;
+    std::array<std::unique_ptr<NoteKey>, 12> keys;     // indexed by pitch class 0..11 (C..B)
 
     juce::ShapeButton prevA { "prevA", neon::cyan, neon::cyan.brighter (0.4f), neon::cyan.darker (0.3f) };
     juce::ShapeButton nextA { "nextA", neon::cyan, neon::cyan.brighter (0.4f), neon::cyan.darker (0.3f) };
+    juce::ShapeButton prevA2 { "prevA2", neon::cyan, neon::cyan.brighter (0.4f), neon::cyan.darker (0.3f) };
+    juce::ShapeButton nextA2 { "nextA2", neon::cyan, neon::cyan.brighter (0.4f), neon::cyan.darker (0.3f) };
     juce::ShapeButton prevB { "prevB", neon::magenta, neon::magenta.brighter (0.4f), neon::magenta.darker (0.3f) };
     juce::ShapeButton nextB { "nextB", neon::magenta, neon::magenta.brighter (0.4f), neon::magenta.darker (0.3f) };
     juce::TextButton renameButton { "RENAME" };
@@ -155,8 +167,8 @@ private:
     std::unique_ptr<juce::FileChooser> chooser;
 
     juce::Image bgImage;
-    juce::Rectangle<int> lcdA, lcdB, pageRect;
-    juce::Rectangle<int> pVoice, pLayer, pMaqam, pSat, pWah, pPh, pDelay, pReverb;
+    juce::Rectangle<int> pageRect, lcdA, lcdM, lcdA2, lcdB2;
+    juce::Rectangle<int> pVoice, pMaqam, pSat, pCh, pWah, pPh, pDelay, pReverb, pLayer;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (NayAudioProcessorEditor)
 };

@@ -25,6 +25,11 @@ juce::StringArray NayAudioProcessor::maqamNames()
     return { "12-TET (none)", "Rast", "Bayati", "Sikah", "Huzam", "Saba" };
 }
 
+float NayAudioProcessor::maqamOffset (int maqam, int pc, int root)
+{
+    return kMaqamCents[juce::jlimit (0, kNumMaqam - 1, maqam)][((pc - root) % 12 + 12) % 12];
+}
+
 const char* const NayAudioProcessor::paramIds[P_count] =
 {
     "gain", "attack", "release", "glide", "vibDepth", "vibRate", "mono", "legato",
@@ -33,7 +38,8 @@ const char* const NayAudioProcessor::paramIds[P_count] =
     "layerBLevel", "layerBVel", "layerBMode",
     "satOn", "satDrive", "satMix",
     "wahOn", "wahPos", "wahRate", "wahMix",
-    "phOn", "phRate", "phDepth", "phMix"
+    "phOn", "phRate", "phDepth", "phMix",
+    "chOn", "chRate", "chDepth", "chMix"
 };
 
 //==============================================================================
@@ -62,8 +68,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout NayAudioProcessor::createLay
     l.add (std::make_unique<F> (id (P_rvSize),     "Reverb Size",    R (0.f, 1.f, 0.001f), 0.6f));
     l.add (std::make_unique<F> (id (P_rvLevel),    "Reverb Level (dB)", R (-60.f, 0.f, 0.1f), -20.f));
 
-    l.add (std::make_unique<F> (id (P_velSens), "Velocity Sens", R (0.f, 1.f, 0.001f), 0.7f));
-    l.add (std::make_unique<F> (id (P_pbRange), "Bend Range (st)", R (0.f, 24.f, 1.f), 2.f));
+    l.add (std::make_unique<F> (id (P_velSens), "Velocity Sens", R (0.f, 1.f, 0.001f), 0.85f));
+    l.add (std::make_unique<F> (id (P_pbRange), "Bend Range (st)", R (1.f, 24.f, 1.f), 2.f));
 
     juce::StringArray notes;
     for (auto* n : kNoteNames) notes.add (n);
@@ -87,6 +93,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout NayAudioProcessor::createLay
     l.add (std::make_unique<F> (id (P_phRate),  "Phaser Rate (Hz)", R (0.05f, 8.f, 0.01f, 0.5f), 0.5f));
     l.add (std::make_unique<F> (id (P_phDepth), "Phaser Depth", R (0.f, 1.f, 0.001f), 0.6f));
     l.add (std::make_unique<F> (id (P_phMix),   "Phaser Amount", R (0.f, 1.f, 0.001f), 0.7f));
+
+    l.add (std::make_unique<B> (id (P_chOn),    "Chorus On", false));
+    l.add (std::make_unique<F> (id (P_chRate),  "Chorus Rate (Hz)", R (0.1f, 5.f, 0.01f, 0.5f), 0.8f));
+    l.add (std::make_unique<F> (id (P_chDepth), "Chorus Depth", R (0.f, 1.f, 0.001f), 0.6f));
+    l.add (std::make_unique<F> (id (P_chMix),   "Chorus Amount", R (0.f, 1.f, 0.001f), 0.7f));
 
     for (int i = 0; i < 12; ++i)
         l.add (std::make_unique<F> (juce::ParameterID { "off" + juce::String (i), 1 },
@@ -130,6 +141,11 @@ void NayAudioProcessor::prepareToPlay (double sampleRate, int)
     delayBuf.setSize (2, (int) (sampleRate * 1.1) + 8);
     delayBuf.clear();
     delayWrite = 0;
+
+    chBuf.setSize (2, (int) (sampleRate * 0.05) + 8);
+    chBuf.clear();
+    chWrite = 0;
+    chLp[0] = chLp[1] = 0.f;
 
     reverb.setSampleRate (sampleRate);
     reverb.reset();
@@ -397,6 +413,14 @@ std::shared_ptr<NaySample> NayAudioProcessor::pickSample (const NayBank* b, int 
     return best;
 }
 
+void NayAudioProcessor::applyVelocity (NayVoice& v, int vel)
+{
+    const float lin = juce::jlimit (0.f, 1.f, (float) vel / 127.f);
+    v.velGain = (1.0f - pVelSens) + pVelSens * std::pow (lin, 1.3f);
+    const float soft = 700.f + 15000.f * std::pow (lin, 1.4f); // soft = darker, hard = brighter
+    v.velFc = 18000.f + (soft - 18000.f) * pVelSens;
+}
+
 void NayAudioProcessor::startVoice (NayVoice& v, int note, int vel,
                                     const std::shared_ptr<const NayBank>& a,
                                     const std::shared_ptr<const NayBank>& b)
@@ -416,11 +440,12 @@ void NayAudioProcessor::startVoice (NayVoice& v, int note, int vel,
     v.sa = sa;
     v.sb = sb;
     v.posA = v.posB = 0.0;
+    v.lp = 0.0f;
     v.note = note;
     v.target = noteTarget (note);
     v.pitch = v.target;
     v.vibPhase = 0.0;
-    v.velGain = (1.0f - pVelSens) + pVelSens * ((float) vel / 127.0f);
+    applyVelocity (v, vel);
     v.gate = true;
     v.age = ++ageCounter;
     v.adsr.noteOn();
@@ -458,7 +483,7 @@ void NayAudioProcessor::handleMidi (const juce::MidiMessage& msg,
                 // legato: no retrigger, just glide
                 v.note = n;
                 v.target = noteTarget (n);
-                v.velGain = (1.0f - pVelSens) + pVelSens * ((float) vel / 127.0f);
+                applyVelocity (v, vel);
                 v.gate = true;
             }
             else
@@ -567,6 +592,7 @@ void NayAudioProcessor::renderVoice (NayVoice& v, juce::AudioBuffer<float>& buf,
     const double glideCoef = pGlide < 1.0f ? 1.0 : 1.0 - std::exp (-1.0 / ((double) pGlide * 0.001 * sr));
     const double depthCents = juce::jmin (100.0, (double) pVibDepth + (double) modWheel * 50.0);
     const double bendSemis = (double) bendNorm * (double) pPbRange;
+    const float lpA = 1.0f - std::exp (-juce::MathConstants<float>::twoPi * juce::jmin (v.velFc, 0.45f * (float) sr) / (float) sr);
 
     for (int i = 0; i < num; ++i)
     {
@@ -596,7 +622,8 @@ void NayAudioProcessor::renderVoice (NayVoice& v, juce::AudioBuffer<float>& buf,
             p += ratio * rateBase[k];
         }
 
-        const float out = mixed * v.adsr.getNextSample() * v.velGain * pGain;
+        v.lp += lpA * (mixed - v.lp);
+        const float out = v.lp * v.adsr.getNextSample() * v.velGain * pGain;
 
         L[i] += out;
         if (R != nullptr)
@@ -627,14 +654,14 @@ void NayAudioProcessor::processSaturation (juce::AudioBuffer<float>& buffer)
         return;
 
     const float drive = pSatDrive, mix = pSatMix;
-    const float k = 1.0f + drive * 14.0f;
+    const float k = 1.0f + drive * 30.0f;
     const float bias = 0.15f * drive;
     const float tb = std::tanh (bias);
-    const float comp = 1.0f / (1.0f + drive * 1.6f);
-    const float fc = 9000.0f - 4500.0f * drive;
+    const float comp = 1.0f / (1.0f + drive * 0.9f);
+    const float fc = 8000.0f - 3500.0f * drive;
     const float lpA = 1.0f - std::exp (-juce::MathConstants<float>::twoPi * fc / (float) sr);
 
-    auto shape = [=] (float x) { return (std::tanh (k * x + bias) - tb) * comp; };
+    auto shape = [=] (float x) { const float a = std::tanh (k * x + bias) - tb; return std::tanh (a * (1.0f + drive * 1.5f)) * comp; };
 
     const int n = buffer.getNumSamples();
     const int chans = juce::jmin (buffer.getNumChannels(), 2);
@@ -765,6 +792,52 @@ void NayAudioProcessor::processPhaser (juce::AudioBuffer<float>& buffer)
     }
 }
 
+// Korg-style 3-voice ensemble chorus (thick, slightly dark) - gives the wide "Turkish solo" sound.
+void NayAudioProcessor::processChorus (juce::AudioBuffer<float>& buffer)
+{
+    const int size = chBuf.getNumSamples();
+    if (! pChOn || size < 64)
+        return;
+
+    const int n = buffer.getNumSamples();
+    const int chans = juce::jmin (buffer.getNumChannels(), 2);
+    const float mix = pChMix;
+    const float depthMs = 2.0f + 5.0f * pChDepth, baseMs = 11.0f;
+    const float lpA = 1.0f - std::exp (-juce::MathConstants<float>::twoPi * 5500.0f / (float) sr);
+
+    for (int i = 0; i < n; ++i)
+    {
+        for (int ch = 0; ch < chans; ++ch)
+        {
+            float* x = buffer.getWritePointer (ch);
+            float* cb = chBuf.getWritePointer (ch);
+            cb[chWrite] = x[i];
+
+            float wet = 0.0f;
+            for (int k = 0; k < 3; ++k)
+            {
+                double ph = chPhase + (double) k / 3.0 + 0.17 * (double) ch;
+                ph -= std::floor (ph);
+                const float d = (baseMs + depthMs * (float) std::sin (juce::MathConstants<double>::twoPi * ph)) * 0.001f * (float) sr;
+                float rp = (float) chWrite - d;
+                if (rp < 0.0f) rp += (float) size;
+                const int i0 = (int) rp % size;
+                const int i1 = (i0 + 1) % size;
+                const float fr = rp - std::floor (rp);
+                wet += cb[i0] + fr * (cb[i1] - cb[i0]);
+            }
+            wet *= (1.0f / 3.0f);
+
+            chLp[ch] += lpA * (wet - chLp[ch]);
+            x[i] = x[i] * (1.0f - 0.35f * mix) + chLp[ch] * mix * 1.1f;
+        }
+
+        if (++chWrite >= size) chWrite = 0;
+        chPhase += (double) pChRate / sr;
+        if (chPhase >= 1.0) chPhase -= 1.0;
+    }
+}
+
 void NayAudioProcessor::processDelay (juce::AudioBuffer<float>& buffer)
 {
     const int n = buffer.getNumSamples();
@@ -853,6 +926,7 @@ void NayAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     pSatOn = getP (P_satOn) > 0.5f;   pSatDrive = getP (P_satDrive);  pSatMix = getP (P_satMix);
     pWahOn = getP (P_wahOn) > 0.5f;   pWahPos = getP (P_wahPos);      pWahRate = getP (P_wahRate);  pWahMix = getP (P_wahMix);
     pPhOn = getP (P_phOn) > 0.5f;     pPhRate = getP (P_phRate);      pPhDepth = getP (P_phDepth);  pPhMix = getP (P_phMix);
+    pChOn = getP (P_chOn) > 0.5f; pChRate = getP (P_chRate); pChDepth = getP (P_chDepth); pChMix = getP (P_chMix);
 
     // fine-tune per note + maqam preset (transposed by the root key)
     const int mq = juce::jlimit (0, kNumMaqam - 1, (int) getP (P_maqam));
@@ -888,6 +962,7 @@ void NayAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     renderAll (buffer, pos, total - pos);
 
     processSaturation (buffer);
+    processChorus (buffer);
     processWah (buffer);
     processPhaser (buffer);
     processDelay (buffer);
