@@ -203,7 +203,7 @@ private:
 
     std::vector<std::unique_ptr<Knob>> knobs;
     Knob *kGain {}, *kAtk {}, *kRel {}, *kGlide {}, *kVibD {}, *kVibR {}, *kPb {},
-         *kSatDrive {}, *kSatMix {}, *kWahPos {}, *kWahMix {},
+         *kSatDrive {}, *kSatMix {}, *kSatTone {}, *kSatBass {}, *kWahPos {}, *kWahMix {},
          *kArpOct {}, *kArpGate {}, *kPhRate {}, *kPhDepth {}, *kPhMix {}, *kDlTime {}, *kDlFb {}, *kDlLvl {}, *kRvSize {}, *kRvLvl {};
 
     std::vector<std::unique_ptr<juce::ToggleButton>> toggles;

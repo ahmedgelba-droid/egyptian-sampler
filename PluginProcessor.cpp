@@ -19,7 +19,7 @@ const char* const NayAudioProcessor::paramIds[P_count] =
     "velOn",
     "arpOn", "arpMode", "arpRate", "arpOct", "arpGate", "arpHold",
     "transpose", "octave",
-    "mainLevel", "mainPan", "mainMute", "duoLevel", "duoPan", "duoMute", "master", "varOn"
+    "mainLevel", "mainPan", "mainMute", "duoLevel", "duoPan", "duoMute", "master", "varOn", "satTone", "satBass"
 };
 
 //==============================================================================
@@ -85,6 +85,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout NayAudioProcessor::createLay
 
     l.add (std::make_unique<B> (id (P_velOn),   "Velocity On", true));
     l.add (std::make_unique<B> (id (P_varOn),   "Note Variation", true));
+    l.add (std::make_unique<F> (id (P_satTone), "KRONOS Presence", R (0.f, 1.f, 0.001f), 0.6f));
+    l.add (std::make_unique<F> (id (P_satBass), "KRONOS Bass", R (0.f, 1.f, 0.001f), 0.1f));
 
 
     for (int i = 0; i < 12; ++i)
@@ -826,6 +828,7 @@ void NayAudioProcessor::processSaturation (juce::AudioBuffer<float>& buffer)
     // tanh stage (drive per band: low 0.45, low-mid 1.0, high-mid 0.85, top 0.8), the bands are summed with a small
     // tone balance, and the result is level-matched to the dry signal.
     const float drive = pSatDrive, mix = pSatMix;
+    const float pTone = getP (P_satTone), pBass = getP (P_satBass);
     const float fs = (float) sr;
     const float twoPi = juce::MathConstants<float>::twoPi;
     const float bias = 0.06f * drive;
@@ -890,10 +893,10 @@ void NayAudioProcessor::processSaturation (juce::AudioBuffer<float>& buffer)
                 y += (std::tanh (kb[b] * band[b] + bias) - tb) * norm[b];
             y *= 1.6f;
             satLo[ch] += aShine * (y - satLo[ch]);
-            y += (y - satLo[ch]) * (3.6f * drive);        // lead shine above 4 kHz (fitted to the reference recording)
+            y += (y - satLo[ch]) * (6.0f * pTone);          // PRESENCE: lead shine above 4 kHz
 
             satHi[ch] += aBass * (y - satHi[ch]);            // amp BASS: warm low end
-            y += satHi[ch] * (0.04f * drive);
+            y += satHi[ch] * (0.8f * pBass);              // BASS: warm low end
 
             satLp[ch] += aTop * (y - satLp[ch]);             // cabinet: 2-pole roll-off at 6.5 kHz
             satLp2[ch] += aTop * (satLp[ch] - satLp2[ch]);

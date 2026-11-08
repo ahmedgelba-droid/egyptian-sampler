@@ -675,6 +675,8 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     tSat = addToggle (mixer, P_satOn, "ACTIVE", gd);
     kSatDrive = addKnob (mixer, P_satDrive, "DRIVE",  2, "", gd);
     kSatMix   = addKnob (mixer, P_satMix,   "AMOUNT", 2, "", gd);
+    kSatTone  = addKnob (mixer, P_satTone,  "PRESENCE", 2, "", gd);
+    kSatBass  = addKnob (mixer, P_satBass,  "BASS", 2, "", gd);
 
 
     tWah = addToggle (mixer, P_wahOn, "ACTIVE", pp);
@@ -975,7 +977,7 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
 
         g.setColour (neon::dim);
         g.setFont (uiFont (10.5f, false));
-        g.drawText ("Pan: center = unity gain.  Right-click any knob / fader = MIDI learn.", 0, 566, 968, 14, juce::Justification::centredLeft, false);
+        g.drawText ("Pan: center = unity gain.  Right-click any knob / fader = MIDI learn.", 0, 578, 968, 14, juce::Justification::centredLeft, false);
     };
 
     info.setColour (juce::Label::textColourId, neon::dim);
@@ -1860,7 +1862,7 @@ void NayAudioProcessorEditor::resized()
     // ================= mixer page: 8 channel strips =================
     const int sw = 117, sg = 4;
     for (int i = 0; i < 8; ++i)
-        mixStrip[i] = { i * (sw + sg), 0, sw, 560 };
+        mixStrip[i] = { i * (sw + sg), 0, sw, 572 };
 
     auto placeFader = [&] (Knob* k, int i)
     {
@@ -1875,7 +1877,10 @@ void NayAudioProcessorEditor::resized()
 
     placeTog (tMainMute, 0); placeFader (kMainLvl, 0); placeKnob (kMainPan, 0, 0);
     placeTog (tDuoMute, 1);  placeFader (kDuoLvl, 1);  placeKnob (kDuoPan, 1, 0);
-    placeTog (tSat, 2);      placeFader (kSatMix, 2);  placeKnob (kSatDrive, 2, 0);
+    placeTog (tSat, 2);      placeFader (kSatMix, 2);
+    layoutRow ({ mixStrip[2].getX() + 14, 358, sw - 28, 68 }, { kSatDrive });
+    layoutRow ({ mixStrip[2].getX() + 14, 428, sw - 28, 68 }, { kSatTone });
+    layoutRow ({ mixStrip[2].getX() + 14, 498, sw - 28, 68 }, { kSatBass });
     placeTog (tWah, 3);      placeFader (kWahMix, 3);  placeKnob (kWahPos, 3, 0);
     placeTog (tPh, 4);       placeFader (kPhMix, 4);   placeKnob (kPhRate, 4, 0); placeKnob (kPhDepth, 4, 1);
     placeFader (kDlLvl, 5);  placeKnob (kDlTime, 5, 0); placeKnob (kDlFb, 5, 1);
