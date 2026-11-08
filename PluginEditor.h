@@ -99,13 +99,12 @@ private:
     void selectSample (int i);
 
     NayAudioProcessor& proc;
-    bool editB = false;
     int selected = -1, dragEdges = 0;
     juce::Point<float> dragStart;
     int o_lo = 0, o_hi = 0, o_vlo = 0, o_vhi = 0;
 
     juce::Rectangle<int> grid, keyStrip;
-    juce::TextButton btnA { "EDIT LAYER A" }, btnB { "EDIT LAYER B" }, resetBtn { "RESET ZONES" };
+    juce::TextButton resetBtn { "RESET ZONES" };
     juce::Slider rootSlider;
     juce::Label rootLabel, fileLabel;
 };
@@ -151,7 +150,6 @@ private:
     void rebuildBackground();
     void refreshGroups();
     void stepGroup (int delta);
-    void stepLayerB (int delta);
 
     NayAudioProcessor& proc;
     NeonLookAndFeel laf;
@@ -163,16 +161,15 @@ private:
 
     std::vector<std::unique_ptr<Knob>> knobs;
     Knob *kGain {}, *kAtk {}, *kRel {}, *kGlide {}, *kVibD {}, *kVibR {}, *kPb {},
-         *kLbLevel {}, *kLbVel {},
-         *kRrAmt {}, *kSatDrive {}, *kSatMix {}, *kWahPos {}, *kWahMix {},
-         *kPorta {}, *kArpOct {}, *kArpGate {}, *kPhRate {}, *kPhDepth {}, *kPhMix {}, *kDlTime {}, *kDlFb {}, *kDlLvl {}, *kRvSize {}, *kRvLvl {};
+         *kSatDrive {}, *kSatMix {}, *kWahPos {}, *kWahMix {},
+         *kArpOct {}, *kArpGate {}, *kPhRate {}, *kPhDepth {}, *kPhMix {}, *kDlTime {}, *kDlFb {}, *kDlLvl {}, *kRvSize {}, *kRvLvl {};
 
     std::vector<std::unique_ptr<juce::ToggleButton>> toggles;
     std::vector<std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>> toggleAtts;
-    juce::ToggleButton *tMono {}, *tLegato {}, *tVel {}, *tPorta {}, *tArp {}, *tArpHold {}, *tSat {}, *tWah {}, *tPh {};
+    juce::ToggleButton *tMono {}, *tLegato {}, *tVel {}, *tArp {}, *tArpHold {}, *tSat {}, *tWah {}, *tPh {};
 
-    juce::ComboBox maqamBox, rootBox, modeBox, arpModeBox, arpRateBox, rrBox;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> maqamAtt, rootAtt, modeAtt, arpModeAtt, arpRateAtt, rrAtt;
+    juce::ComboBox maqamBox, rootBox, arpModeBox, arpRateBox;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> maqamAtt, rootAtt, arpModeAtt, arpRateAtt;
 
     std::array<std::unique_ptr<NoteKey>, 12> keys;     // indexed by pitch class 0..11 (C..B)
 
@@ -180,8 +177,6 @@ private:
     juce::ShapeButton nextA { "nextA", neon::cyan, neon::cyan.brighter (0.4f), neon::cyan.darker (0.3f) };
     juce::ShapeButton prevA2 { "prevA2", neon::cyan, neon::cyan.brighter (0.4f), neon::cyan.darker (0.3f) };
     juce::ShapeButton nextA2 { "nextA2", neon::cyan, neon::cyan.brighter (0.4f), neon::cyan.darker (0.3f) };
-    juce::ShapeButton prevB { "prevB", neon::magenta, neon::magenta.brighter (0.4f), neon::magenta.darker (0.3f) };
-    juce::ShapeButton nextB { "nextB", neon::magenta, neon::magenta.brighter (0.4f), neon::magenta.darker (0.3f) };
     juce::TextButton renameButton { "RENAME" };
     juce::TextButton minusBtn { "-" }, plusBtn { "+" }, cancelBtn { "CANCEL" };
     void stepRoot (int d);
@@ -192,13 +187,19 @@ private:
     WheelView pitchWheel { [this] { return proc.getBend(); }, true, neon::cyan };
     WheelView modWheelView { [this] { return proc.getModWheel(); }, false, neon::amber };
     WheelView expWheel { [this] { return proc.getExpr(); }, false, neon::green };
-    juce::Slider pbBox;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> pbAtt;
+    juce::Slider pbBox, trBox, ocBox;     // bend range / transpose (semitones) / octave
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> pbAtt, trAtt, ocAtt;
+    void setupStepBox (juce::Slider&, std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>&, const char* paramId, bool showSign);
+    // anything touched by hand is also written to the info strip
+    std::vector<float> lastParamVals;
+    bool paramsInit = false;
+    juce::String touchText;
+    juce::uint32 touchMs = 0, lastMidiMs = 0;
     juce::Rectangle<int> pWheels;
 
     juce::Image bgImage;
-    juce::Rectangle<int> pageRect, lcdA, lcdM, lcdA2, lcdB2;
-    juce::Rectangle<int> pVoice, pMaqam, pSat, pWah, pPh, pDelay, pReverb, pLayer, pVar, pArp;
+    juce::Rectangle<int> pageRect, lcdA, lcdA2;
+    juce::Rectangle<int> pVoice, pMaqam, pSat, pWah, pPh, pDelay, pReverb, pArp;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (NayAudioProcessorEditor)
 };

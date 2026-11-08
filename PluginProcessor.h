@@ -46,14 +46,12 @@ enum NayParam
     P_gain, P_attack, P_release, P_glide, P_vibDepth, P_vibRate, P_mono, P_legato,
     P_delayTime, P_delayFb, P_delayLevel, P_rvSize, P_rvLevel,
     P_velSens, P_pbRange, P_maqam, P_root,
-    P_layerBLevel, P_layerBVel, P_layerBMode,
     P_satOn, P_satDrive, P_satMix,
     P_wahOn, P_wahPos, P_wahRate, P_wahMix,
     P_phOn, P_phRate, P_phDepth, P_phMix,
     P_velOn,
     P_arpOn, P_arpMode, P_arpRate, P_arpOct, P_arpGate, P_arpHold,
-    P_portaOn, P_portaTime,
-    P_rrMode, P_rrAmount,
+    P_transpose, P_octave,
     P_count
 };
 
@@ -94,13 +92,11 @@ public:
     // ---- instruments (message thread only) ----
     int addFolder (const juce::File& folder);
     void selectGroup (int index);                 // layer A
-    void selectLayerB (int index);                // layer B (-1 = none)
     void renameGroup (int index, const juce::String& newName);
     void resetZones (int index);                  // back to automatic mapping
     int getNumGroups() const { return (int) groups.size(); }
     juce::String getGroupName (int i) const { return groups[(size_t) i].name; }
     int getActiveGroup() const { return activeGroup; }
-    int getLayerBGroup() const { return layerBGroup; }
     std::shared_ptr<const NayBank> getBankOf (int groupIndex) const
     {
         return (groupIndex >= 0 && groupIndex < (int) groups.size()) ? groups[(size_t) groupIndex].bank : nullptr;
@@ -145,8 +141,8 @@ private:
     void addGroup (const juce::String& name, const juce::String& path);
     void ensureLoaded (int index);
     void syncZones();
-    void handleMidi (const juce::MidiMessage&, const std::shared_ptr<const NayBank>&, const std::shared_ptr<const NayBank>&);
-    void startVoice (NayVoice&, int note, int vel, const std::shared_ptr<const NayBank>&, const std::shared_ptr<const NayBank>&);
+    void handleMidi (const juce::MidiMessage&, const std::shared_ptr<const NayBank>&);
+    void startVoice (NayVoice&, int note, int vel, const std::shared_ptr<const NayBank>&);
     void allNotesOff();
     void renderVoice (NayVoice&, juce::AudioBuffer<float>&, int start, int num);
     void renderAll (juce::AudioBuffer<float>&, int start, int num);
@@ -155,7 +151,6 @@ private:
     void processPhaser (juce::AudioBuffer<float>&);
     void runArp (const juce::MidiBuffer& in, juce::MidiBuffer& out, int numSamples, double bpm);
     void applyVelocity (NayVoice&, int vel);
-    void applyVariation (NayVoice&);
     void processDelay (juce::AudioBuffer<float>&);
     void processReverb (juce::AudioBuffer<float>&);
     double noteTarget (int note) const;
@@ -163,11 +158,11 @@ private:
 
     // instruments
     std::vector<NayGroup> groups;
-    int activeGroup = -1, layerBGroup = -1;
+    int activeGroup = -1;
     juce::String sampleInfo { "No instruments yet - click Add Folder" };
 
     // banks used by the audio thread (swapped from the message thread)
-    std::shared_ptr<const NayBank> bankA, bankB;
+    std::shared_ptr<const NayBank> bankA;
     juce::SpinLock bankLock;
 
     std::atomic<float>* raws[P_count] {};
@@ -176,8 +171,7 @@ private:
     // per-block parameter values
     float pGain = 0.8f, pGlide = 60.f, pVibDepth = 0.f, pVibRate = 5.f;
     float pDelayTime = 350.f, pDelayFb = 0.3f, pDelayLvl = -10.f, pRvSize = 0.6f, pRvLvl = -20.f;
-    float pVelSens = 0.7f, pPbRange = 2.f, pLayerBGain = 1.f;
-    int pLayerBVel = 100, pLayerBMode = 0;
+    float pVelSens = 0.7f, pPbRange = 2.f;
     bool pMono = true, pLegato = true, lastMono = true;
     bool pSatOn = false, pWahOn = false, pPhOn = false;
     float pSatDrive = 0.4f, pSatMix = 0.6f;
@@ -207,17 +201,14 @@ private:
     int pArpMode = 0, pArpRate = 1, pArpOct = 1;
     float pArpGate = 0.8f;
     juce::Random rng;
-    int rrCount = 0, lastRand = -1, pRrMode = 1, varCount = 0, lastVar = -1;
-    float pRrAmount = 0.5f;
+    NaySample* lastPicked = nullptr;      // last sample used (compared only, never dereferenced)
+    int sentNote[128] {};                 // note actually played for each input key (0 = none, -1 = dropped, else note+1)
     std::atomic<int> learnTarget { -1 }, expCC { 11 }, doneCC { 0 }, doneTarget { -1 }, doneCount { 0 };
     std::atomic<int> ccMap[128];
     juce::RangedAudioParameter* params[P_count] {};
     std::atomic<int> monKind { 0 }, monA { 0 }, monB { 0 }, monCount { 0 };
-    bool pPortaOn = false;
-    float pPortaTime = 150.f;
-    double lastPitch = -1.0;
-    juce::int64 clockPos = 0, curPos = 0, lastOnPos = -1000000000;
-    float satLo[2] {}, satHi[2] {};
+    juce::int64 clockPos = 0, curPos = 0;
+    float satLo[2] {}, satHi[2] {}, satLp2[2] {}, satEnvIn[2] {}, satEnvOut[2] {}, satG[2] { 1.0f, 1.0f };
 
     juce::AudioBuffer<float> delayBuf;
     int delayWrite = 0;

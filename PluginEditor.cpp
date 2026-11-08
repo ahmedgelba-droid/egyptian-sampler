@@ -142,22 +142,10 @@ void NeonLookAndFeel::drawComboBox (juce::Graphics& g, int w, int h, bool, int, 
 //==============================================================================
 MapView::MapView (NayAudioProcessor& p) : proc (p)
 {
-    for (auto* b : { &btnA, &btnB })
-    {
-        b->setClickingTogglesState (true);
-        b->setRadioGroupId (77);
-        addAndMakeVisible (*b);
-    }
-    btnA.setColour (juce::TextButton::buttonColourId, neon::cyan);
-    btnB.setColour (juce::TextButton::buttonColourId, neon::magenta);
     resetBtn.setColour (juce::TextButton::buttonColourId, neon::amber);
-    btnA.setToggleState (true, juce::dontSendNotification);
-
-    btnA.onClick = [this] { if (btnA.getToggleState()) { editB = false; selected = -1; refresh(); } };
-    btnB.onClick = [this] { if (btnB.getToggleState()) { editB = true;  selected = -1; refresh(); } };
     resetBtn.onClick = [this]
     {
-        proc.resetZones (editB ? proc.getLayerBGroup() : proc.getActiveGroup());
+        proc.resetZones (proc.getActiveGroup());
         selected = -1;
         refresh();
     };
@@ -194,7 +182,7 @@ MapView::MapView (NayAudioProcessor& p) : proc (p)
 
 std::shared_ptr<const NayBank> MapView::currentBank() const
 {
-    return proc.getBankOf (editB ? proc.getLayerBGroup() : proc.getActiveGroup());
+    return proc.getBankOf (proc.getActiveGroup());
 }
 
 void MapView::refresh()
@@ -230,8 +218,6 @@ void MapView::selectSample (int i)
 void MapView::resized()
 {
     auto a = getLocalBounds().reduced (14);
-    btnA.setBounds (a.getX(), a.getY(), 140, 28);
-    btnB.setBounds (a.getX() + 148, a.getY(), 140, 28);
     resetBtn.setBounds (a.getRight() - 140, a.getY(), 140, 28);
 
     const int bottomRowH = 32;
@@ -258,7 +244,7 @@ void MapView::paint (juce::Graphics& g)
     auto all = getLocalBounds().toFloat();
     g.setColour (neon::panel.withAlpha (0.92f));
     g.fillRoundedRectangle (all, 10.0f);
-    g.setColour ((editB ? neon::magenta : neon::cyan).withAlpha (0.4f));
+    g.setColour (neon::cyan.withAlpha (0.4f));
     g.drawRoundedRectangle (all.reduced (0.5f), 10.0f, 1.2f);
 
     g.setColour (juce::Colour (0xff070c16));
@@ -277,8 +263,12 @@ void MapView::paint (juce::Graphics& g)
         g.setColour (neon::dim);
         g.drawText (juce::String (v), grid.getX() - 34, (int) velToY (v) - 7, 30, 14, juce::Justification::centredRight, false);
     }
-    g.setColour ((editB ? neon::magenta : neon::cyan).withAlpha (0.5f));
+    g.setColour (neon::cyan.withAlpha (0.5f));
     g.drawRect (grid, 1);
+
+    g.setColour (neon::cyan);
+    g.setFont (uiFont (13.0f));
+    g.drawText ("MAPPING  //  key range x velocity range", 14, 14, 420, 28, juce::Justification::centredLeft, false);
 
     // keyboard strip (keys altered by the chosen maqam / fine tune light up)
     const int mqSel = (int) proc.apvts.getRawParameterValue ("maqam")->load();
@@ -310,7 +300,7 @@ void MapView::paint (juce::Graphics& g)
     {
         g.setColour (neon::dim);
         g.setFont (uiFont (15.0f));
-        g.drawText (editB ? "NO INSTRUMENT ON LAYER B  (pick one with the arrows)" : "NO INSTRUMENT ON LAYER A  (use ADD FOLDER)",
+        g.drawText ("NO INSTRUMENT  (use ADD FOLDER)",
                     grid, juce::Justification::centred, false);
         return;
     }
@@ -324,7 +314,7 @@ void MapView::paint (juce::Graphics& g)
 
             const auto& s = *(*bank)[(size_t) i];
             const auto r = zoneRect (s);
-            const auto col = juce::Colour::fromHSV (std::fmod ((float) i * 0.17f + (editB ? 0.8f : 0.5f), 1.0f), 0.75f, 1.0f, 1.0f);
+            const auto col = juce::Colour::fromHSV (std::fmod ((float) i * 0.17f + 0.5f, 1.0f), 0.75f, 1.0f, 1.0f);
 
             g.setColour (col.withAlpha (sel ? 0.5f : 0.28f));
             g.fillRect (r);
@@ -592,8 +582,6 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     kVibD  = addKnob (page, P_vibDepth,"VIB DEPTH", 0, "ct", tq);
     kVibR  = addKnob (page, P_vibRate, "VIB SPEED", 1, "Hz", tq);
     tVel   = addToggle (page, P_velOn, "VELOCITY", gd);
-    kPorta = addKnob (page, P_portaTime, "PORTA TIME", 0, "ms", gd);
-    tPorta = addToggle (page, P_portaOn, "PORTAMENTO", gd);
     tMono   = addToggle (page, P_mono,   "MONO",   tq);
     tLegato = addToggle (page, P_legato, "LEGATO", tq);
 
@@ -603,6 +591,18 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     maqamBox.setColour (juce::ComboBox::outlineColourId, gd);
     rootBox.setColour (juce::ComboBox::outlineColourId, gd);
     rootBox.setVisible (false);
+    maqamBox.onChange = [this]     // choosing EQUAL wipes the whole maqam board (the root key stays)
+    {
+        if (maqamBox.getSelectedItemIndex() != 0)
+            return;
+        for (int i = 0; i < 12; ++i)
+            if (auto* q = proc.apvts.getParameter ("off" + juce::String (i)))
+            {
+                q->beginChangeGesture();
+                q->setValueNotifyingHost (q->convertTo0to1 (0.0f));
+                q->endChangeGesture();
+            }
+    };
     for (auto* b : { &minusBtn, &plusBtn, &cancelBtn })
     {
         b->setColour (juce::TextButton::buttonColourId, b == &cancelBtn ? neon::magenta : neon::amber);
@@ -669,40 +669,21 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     page.addAndMakeVisible (expWheel);
     learnTargets.push_back ({ &expWheel, -2 });
     expWheel.addMouseListener (this, false);
-    pbBox.setSliderStyle (juce::Slider::IncDecButtons);
-    pbBox.setIncDecButtonsMode (juce::Slider::incDecButtonsNotDraggable);
-    pbBox.setTextBoxStyle (juce::Slider::TextBoxLeft, false, 44, 32);
-    pbBox.setColour (juce::Slider::textBoxTextColourId, neon::amber);
-    pbBox.setColour (juce::Slider::textBoxBackgroundColourId, juce::Colour (0xff070c16));
-    pbBox.setColour (juce::Slider::textBoxOutlineColourId, neon::amber.withAlpha (0.6f));
-    pbBox.setColour (juce::TextButton::buttonColourId, neon::amber);
-    pbAtt = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (proc.apvts, "pbRange", pbBox);
-    pbBox.textFromValueFunction = [] (double v) { return juce::String ((int) v); };
-    pbBox.updateText();
-    page.addAndMakeVisible (pbBox);
+    setupStepBox (pbBox, pbAtt, "pbRange", false);
+    setupStepBox (trBox, trAtt, "transpose", true);
+    setupStepBox (ocBox, ocAtt, "octave", true);
 
-    // ---- settings page: layer B, folders, mapping ----
-    kLbLevel = addKnob (settings, P_layerBLevel, "B LEVEL", 1, "dB", cr);
-    kLbVel   = addKnob (settings, P_layerBVel,   "B FROM VEL", 0, "", cr);
-    addCombo (settings, modeBox, P_layerBMode, modeAtt);
-    modeBox.setColour (juce::ComboBox::outlineColourId, cr);
-    addCombo (settings, rrBox, P_rrMode, rrAtt);
-    rrBox.setColour (juce::ComboBox::outlineColourId, gd);
-    kRrAmt = addKnob (settings, P_rrAmount, "AMOUNT", 2, "", gd);
-
+    // ---- settings page: folders, instrument, mapping ----
     juce::Path left, right;
     left.addTriangle (0.f, 0.5f, 1.f, 0.f, 1.f, 1.f);
     right.addTriangle (1.f, 0.5f, 0.f, 0.f, 0.f, 1.f);
-    for (auto* b : { &prevA, &prevA2, &prevB })  b->setShape (left, false, true, false);
-    for (auto* b : { &nextA, &nextA2, &nextB })  b->setShape (right, false, true, false);
+    for (auto* b : { &prevA, &prevA2 })  b->setShape (left, false, true, false);
+    for (auto* b : { &nextA, &nextA2 })  b->setShape (right, false, true, false);
     page.addAndMakeVisible (prevA);   page.addAndMakeVisible (nextA);
     settings.addAndMakeVisible (prevA2); settings.addAndMakeVisible (nextA2);
-    settings.addAndMakeVisible (prevB);  settings.addAndMakeVisible (nextB);
 
     prevA.onClick = prevA2.onClick = [this] { stepGroup (-1); };
     nextA.onClick = nextA2.onClick = [this] { stepGroup (1); };
-    prevB.onClick = [this] { stepLayerB (-1); };
-    nextB.onClick = [this] { stepLayerB (1); };
 
     addButton.setColour (juce::TextButton::buttonColourId, tq);
     renameButton.setColour (juce::TextButton::buttonColourId, tq);
@@ -780,17 +761,7 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
                  a >= 0 ? juce::String (bank != nullptr ? (int) bank->size() : 0) + " samples"
                         : "open SETTINGS > ADD FOLDER", neon::cyan);
 
-        const int mq = (int) proc.apvts.getRawParameterValue ("maqam")->load();
         const int rt = (int) proc.apvts.getRawParameterValue ("root")->load();
-        juce::String altered;
-        for (int i = 0; i < 12; ++i)
-        {
-            const float o = proc.apvts.getRawParameterValue ("off" + juce::String (i))->load() + NayAudioProcessor::maqamOffset (mq, i, rt);
-            if (std::abs (o) > 0.5f)
-                altered << kNames[i] << (o > 0 ? " +" : " ") << (int) std::round (o) << "    ";
-        }
-        drawLcd (g, lcdM, "MAQAM", mq == 0 ? juce::String ("EQUAL") : NayAudioProcessor::maqamNames()[mq] + "  on  " + kNames[rt],
-                 altered.isEmpty() ? juce::String ("no altered notes") : altered.trim(), neon::amber);
 
         drawPanel (g, pVoice, "VOICE", neon::cyan);
         drawPanel (g, pMaqam, "MAQAM  //  MICROTONAL KEYS", neon::amber);
@@ -799,18 +770,20 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
         drawPanel (g, pPh, "PHASER", neon::violet);
         drawPanel (g, pDelay, "DELAY", neon::cyan);
         drawPanel (g, pReverb, "REVERB", neon::magenta);
-        drawPanel (g, pArp, "ARPEGGIATOR  //  held notes, maqam tuning", neon::amber);
+        drawPanel (g, pArp, "ARPEGGIATOR", neon::amber);
         drawPanel (g, pWheels, "WHEELS", neon::cyan);
         g.setFont (uiFont (9.0f));
         g.setColour (neon::dim);
         g.drawText ("PITCH", pWheels.getX() + 4, pWheels.getY() + 24, 36, 10, juce::Justification::centred, false);
-        g.drawText ("MOD", pWheels.getX() + 42, pWheels.getY() + 24, 36, 10, juce::Justification::centred, false);
-        g.drawText ("EXP", pWheels.getX() + 80, pWheels.getY() + 24, 36, 10, juce::Justification::centred, false);
-        g.drawText ("BEND RANGE", pWheels.getX() + 122, pWheels.getY() + 24, 92, 10, juce::Justification::centred, false);
+        g.drawText ("MOD", pWheels.getX() + 36, pWheels.getY() + 24, 36, 10, juce::Justification::centred, false);
+        g.drawText ("EXP", pWheels.getX() + 68, pWheels.getY() + 24, 36, 10, juce::Justification::centred, false);
+        g.drawText ("BEND RANGE", pWheels.getX() + 106, pWheels.getY() + 24, 92, 10, juce::Justification::centred, false);
+        g.drawText ("TRANSPOSE (st)", pWheels.getX() + 202, pWheels.getY() + 24, 92, 10, juce::Justification::centred, false);
+        g.drawText ("OCTAVE", pWheels.getX() + 298, pWheels.getY() + 24, 92, 10, juce::Justification::centred, false);
         g.setFont (uiFont (10.5f));
         g.setColour (neon::dim);
-        g.drawText ("PATTERN", pArp.getX() + 140, pArp.getY() + 24, 100, 12, juce::Justification::centredLeft, false);
-        g.drawText ("RATE (synced to host BPM)", pArp.getX() + 300, pArp.getY() + 24, 160, 12, juce::Justification::centredLeft, false);
+        g.drawText ("PATTERN", pArp.getX() + 128, pArp.getY() + 24, 100, 12, juce::Justification::centredLeft, false);
+        g.drawText ("RATE (BPM)", pArp.getX() + 276, pArp.getY() + 24, 100, 12, juce::Justification::centredLeft, false);
 
         g.setFont (uiFont (10.5f));
         g.setColour (neon::amber);
@@ -840,25 +813,10 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     {
         g.drawImageAt (bgImage, -settings.getX(), -settings.getY());
 
-        const int a = proc.getActiveGroup(), b = proc.getLayerBGroup();
-        auto sub = [this] (int i)
-        {
-            auto bank = proc.getBankOf (i);
-            return bank != nullptr ? juce::String ((int) bank->size()) + " samples" : juce::String();
-        };
-        drawLcd (g, lcdA2, "LAYER A", a >= 0 ? proc.getGroupName (a) : "NO INSTRUMENT", a >= 0 ? sub (a) : "press ADD FOLDER", neon::cyan);
-        drawLcd (g, lcdB2, "LAYER B", b >= 0 ? proc.getGroupName (b) : "OFF", b >= 0 ? sub (b) : "use the arrows to pick", neon::magenta);
-
-        drawPanel (g, pLayer, "LAYER B  //  VELOCITY SWITCH  (e.g. oud + tremolo)", neon::magenta);
-        g.setFont (uiFont (10.5f));
-        g.setColour (neon::dim);
-        g.drawText ("MODE", pLayer.getX() + 340, pLayer.getY() + 24, 100, 14, juce::Justification::centredLeft, false);
-        g.setFont (uiFont (11.0f, false));
-        g.drawFittedText ("Layer B plays from the chosen velocity.\nSWITCH replaces A.   STACK plays over A.",
-                          pLayer.getX() + 560, pLayer.getY() + 30, 170, 60, juce::Justification::topLeft, 4);
-
-        drawPanel (g, pVar, "SAMPLE VARIATION", neon::amber);
-
+        const int a = proc.getActiveGroup();
+        auto bank = proc.getBankOf (a);
+        drawLcd (g, lcdA2, "INSTRUMENT", a >= 0 ? proc.getGroupName (a) : "NO INSTRUMENT",
+                 a >= 0 ? juce::String (bank != nullptr ? (int) bank->size() : 0) + " samples" : "press ADD FOLDER", neon::cyan);
     };
 
     refreshGroups();
@@ -996,6 +954,31 @@ void NayAudioProcessorEditor::timerCallback()
         if (juce::Time::getMillisecondCounter() - lastLearnMs < 3100) repaint (midiRect);
     }
 
+    {
+        const auto& plist = proc.getParameters();
+        if (! paramsInit || lastParamVals.size() != (size_t) plist.size())
+        {
+            lastParamVals.clear();
+            for (auto* q : plist) lastParamVals.push_back (q->getValue());
+            paramsInit = true;
+        }
+        else
+        {
+            for (int i = 0; i < plist.size(); ++i)
+            {
+                const float v = plist[i]->getValue();
+                if (std::abs (v - lastParamVals[(size_t) i]) > 1.0e-6f)
+                {
+                    lastParamVals[(size_t) i] = v;
+                    touchText = plist[i]->getName (28) + ": " + plist[i]->getCurrentValueAsText();
+                    touchMs = juce::Time::getMillisecondCounter();
+                    lastMonMs = touchMs;
+                    repaint (midiRect);
+                }
+            }
+        }
+    }
+
     int k, a, b, cnt;
     proc.getMidiMonitor (k, a, b, cnt);
     const bool flash = juce::Time::getMillisecondCounter() - lastMonMs < 400;
@@ -1003,6 +986,7 @@ void NayAudioProcessorEditor::timerCallback()
     {
         lastMonCount = cnt;
         lastMonMs = juce::Time::getMillisecondCounter();
+        lastMidiMs = lastMonMs;
         repaint (midiRect);
     }
     else if (flash)
@@ -1040,18 +1024,24 @@ void NayAudioProcessorEditor::stepGroup (int delta)
     refreshGroups();
 }
 
-void NayAudioProcessorEditor::stepLayerB (int delta)
+void NayAudioProcessorEditor::setupStepBox (juce::Slider& s, std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>& att,
+                                            const char* paramId, bool showSign)
 {
-    const int n = proc.getNumGroups();
-    if (n <= 0)
-        return;
-
-    int next = proc.getLayerBGroup() + delta;   // -1 = off
-    if (next >= n)  next = -1;
-    if (next < -1)  next = n - 1;
-
-    proc.selectLayerB (next);
-    refreshGroups();
+    s.setSliderStyle (juce::Slider::IncDecButtons);
+    s.setIncDecButtonsMode (juce::Slider::incDecButtonsNotDraggable);
+    s.setTextBoxStyle (juce::Slider::TextBoxLeft, false, 44, 32);
+    s.setColour (juce::Slider::textBoxTextColourId, neon::amber);
+    s.setColour (juce::Slider::textBoxBackgroundColourId, juce::Colour (0xff070c16));
+    s.setColour (juce::Slider::textBoxOutlineColourId, neon::amber.withAlpha (0.6f));
+    s.setColour (juce::TextButton::buttonColourId, neon::amber);
+    att = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (proc.apvts, paramId, s);
+    s.textFromValueFunction = [showSign] (double v)
+    {
+        const int i = (int) std::lround (v);
+        return (showSign && i > 0 ? juce::String ("+") : juce::String()) + juce::String (i);
+    };
+    s.updateText();
+    page.addAndMakeVisible (s);
 }
 
 void NayAudioProcessorEditor::refreshGroups()
@@ -1302,7 +1292,9 @@ void NayAudioProcessorEditor::paint (juce::Graphics& g)
         proc.getMidiMonitor (k, a, b, cnt);
 
         juce::String t = "waiting for MIDI...";
-        if (k == 1 || k == 2)
+        if (touchMs != 0 && touchMs >= lastMidiMs)
+            t = touchText;
+        else if (k == 1 || k == 2)
         {
             const juce::String nn = juce::String (kNames[a % 12]) + juce::String (a / 12);   // C5 = middle C (60)
             t = k == 1 ? "Note on: " + nn + " / velocity " + juce::String (b) : "Note off: " + nn;
@@ -1374,17 +1366,15 @@ void NayAudioProcessorEditor::resized()
     settings.setBounds (pageRect);
 
     // ================= main page (local coords) =================
-    lcdA = { 0, 0, 560, 60 };
-    lcdM = { 568, 0, 400, 60 };
+    lcdA = { 0, 0, 968, 60 };      // instrument name: top of the page, full width
     prevA.setBounds (lcdA.getX() + 8, lcdA.getCentreY() - 14, 20, 28);
     nextA.setBounds (lcdA.getRight() - 28, lcdA.getCentreY() - 14, 20, 28);
 
     pVoice = { 0, 68, 968, 128 };
-    layoutRow ({ 10, pVoice.getY() + 22, 704, 100 }, { kGain, kAtk, kRel, kVibD, kVibR, kGlide, kPorta });
+    layoutRow ({ 10, pVoice.getY() + 22, 600, 100 }, { kGain, kAtk, kRel, kVibD, kVibR, kGlide });
     tMono->setBounds (748, pVoice.getY() + 22, 150, 24);
     tLegato->setBounds (748, pVoice.getY() + 48, 150, 24);
     tVel->setBounds (748, pVoice.getY() + 74, 150, 24);
-    tPorta->setBounds (748, pVoice.getY() + 100, 150, 24);
 
     pMaqam = { 0, 204, 968, 150 };
     maqamBox.setBounds (14, pMaqam.getY() + 34, 226, 26);
@@ -1426,34 +1416,26 @@ void NayAudioProcessorEditor::resized()
     tPh->setBounds (togArea (pPh));
 
     // ================= settings page (local coords) =================
-    lcdA2 = { 0, 0, 300, 60 };
-    lcdB2 = { 308, 0, 300, 60 };
+    lcdA2 = { 0, 0, 600, 60 };
     prevA2.setBounds (lcdA2.getX() + 8, 16, 20, 28);
     nextA2.setBounds (lcdA2.getRight() - 28, 16, 20, 28);
-    prevB.setBounds (lcdB2.getX() + 8, 16, 20, 28);
-    nextB.setBounds (lcdB2.getRight() - 28, 16, 20, 28);
     addButton.setBounds (616, 0, 150, 28);
     renameButton.setBounds (616, 32, 150, 28);
     info.setBounds (776, 0, 190, 60);
 
-    pLayer = { 0, 68, 740, 104 };
-    pVar = { 748, 68, 220, 104 };
-    rrBox.setBounds (pVar.getX() + 12, pVar.getY() + 44, 112, 28);
-    layoutRow ({ pVar.getX() + 128, pVar.getY() + 24, 84, 78 }, { kRrAmt });
-    layoutRow ({ 10, pLayer.getY() + 22, 300, 80 }, { kLbLevel, kLbVel });
-    modeBox.setBounds (340, pLayer.getY() + 44, 200, 28);
+    mapView.setBounds (0, 68, 968, 524);
 
-    mapView.setBounds (0, 180, 968, 412);
-
-    pArp = { 0, 502, 740, 90 };
-    pWheels = { 748, 502, 220, 90 };
+    pArp = { 0, 502, 560, 90 };           // smaller
+    pWheels = { 568, 502, 400, 90 };      // bigger: wheels + bend range + transpose + octave
     pitchWheel.setBounds (pWheels.getX() + 8, pWheels.getY() + 36, 28, 50);
-    modWheelView.setBounds (pWheels.getX() + 46, pWheels.getY() + 36, 28, 50);
-    expWheel.setBounds (pWheels.getX() + 84, pWheels.getY() + 36, 28, 50);
-    pbBox.setBounds (pWheels.getX() + 124, pWheels.getY() + 40, 88, 34);
+    modWheelView.setBounds (pWheels.getX() + 40, pWheels.getY() + 36, 28, 50);
+    expWheel.setBounds (pWheels.getX() + 72, pWheels.getY() + 36, 28, 50);
+    pbBox.setBounds (pWheels.getX() + 108, pWheels.getY() + 40, 88, 34);
+    trBox.setBounds (pWheels.getX() + 204, pWheels.getY() + 40, 88, 34);
+    ocBox.setBounds (pWheels.getX() + 300, pWheels.getY() + 40, 88, 34);
     tArp->setBounds (12, pArp.getY() + 28, 110, 26);
     tArpHold->setBounds (12, pArp.getY() + 58, 110, 26);
-    arpModeBox.setBounds (140, pArp.getY() + 38, 150, 28);
-    arpRateBox.setBounds (300, pArp.getY() + 38, 110, 28);
-    layoutRow ({ 520, pArp.getY() + 20, 200, 66 }, { kArpOct, kArpGate });
+    arpModeBox.setBounds (128, pArp.getY() + 38, 140, 28);
+    arpRateBox.setBounds (276, pArp.getY() + 38, 100, 28);
+    layoutRow ({ 384, pArp.getY() + 20, 168, 66 }, { kArpOct, kArpGate });
 }

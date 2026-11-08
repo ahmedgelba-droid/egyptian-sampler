@@ -35,14 +35,12 @@ const char* const NayAudioProcessor::paramIds[P_count] =
     "gain", "attack", "release", "glide", "vibDepth", "vibRate", "mono", "legato",
     "delayTime", "delayFb", "delayLevel", "rvSize", "rvLevel",
     "velSens", "pbRange", "maqam", "root",
-    "layerBLevel", "layerBVel", "layerBMode",
     "satOn", "satDrive", "satMix",
     "wahOn", "wahPos", "wahRate", "wahMix",
     "phOn", "phRate", "phDepth", "phMix",
     "velOn",
     "arpOn", "arpMode", "arpRate", "arpOct", "arpGate", "arpHold",
-    "portaOn", "portaTime",
-    "rrMode", "rrAmount"
+    "transpose", "octave"
 };
 
 //==============================================================================
@@ -79,10 +77,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout NayAudioProcessor::createLay
     l.add (std::make_unique<C> (id (P_maqam), "Maqam", maqamNames(), 0));
     l.add (std::make_unique<C> (id (P_root),  "Root Key", notes, 0));
 
-    l.add (std::make_unique<F> (id (P_layerBLevel), "Layer B Level (dB)", R (-60.f, 6.f, 0.1f), 0.f));
-    l.add (std::make_unique<F> (id (P_layerBVel),   "Layer B From Velocity", R (1.f, 127.f, 1.f), 100.f));
-    l.add (std::make_unique<C> (id (P_layerBMode),  "Layer B Mode", juce::StringArray { "Switch", "Stack" }, 0));
-
     l.add (std::make_unique<B> (id (P_satOn),    "KRONOS On", false));
     l.add (std::make_unique<F> (id (P_satDrive), "KRONOS Drive", R (0.f, 1.f, 0.001f), 0.6f));
     l.add (std::make_unique<F> (id (P_satMix),   "KRONOS Amount", R (0.f, 1.f, 0.001f), 0.6f));
@@ -103,10 +97,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout NayAudioProcessor::createLay
     l.add (std::make_unique<F> (id (P_arpOct),  "Arp Octaves", R (1.f, 4.f, 1.f), 1.f));
     l.add (std::make_unique<F> (id (P_arpGate), "Arp Gate", R (0.1f, 1.f, 0.01f), 0.8f));
     l.add (std::make_unique<B> (id (P_arpHold), "Arp Hold", false));
-    l.add (std::make_unique<C> (id (P_rrMode), "Sample Variation", juce::StringArray { "Off", "Round Robin", "Random" }, 1));
-    l.add (std::make_unique<F> (id (P_rrAmount), "Variation Amount", R (0.f, 1.f, 0.001f), 0.5f));
-    l.add (std::make_unique<B> (id (P_portaOn),   "Portamento On", false));
-    l.add (std::make_unique<F> (id (P_portaTime), "Portamento Time (ms)", R (5.f, 1500.f, 1.f, 0.5f), 150.f));
+    l.add (std::make_unique<F> (id (P_transpose), "Transpose (st)", R (-12.f, 12.f, 1.f), 0.f));
+    l.add (std::make_unique<F> (id (P_octave),    "Octave", R (-3.f, 3.f, 1.f), 0.f));
 
     l.add (std::make_unique<B> (id (P_velOn),   "Velocity On", true));
 
@@ -348,23 +340,6 @@ void NayAudioProcessor::selectGroup (int index)
     sampleInfo = groups[(size_t) index].name + ": " + juce::String ((int) groups[(size_t) index].bank->size()) + " samples";
 }
 
-void NayAudioProcessor::selectLayerB (int index)
-{
-    if (index < 0 || index >= (int) groups.size())
-    {
-        layerBGroup = -1;
-        juce::SpinLock::ScopedLockType lock (bankLock);
-        bankB = nullptr;
-        return;
-    }
-
-    ensureLoaded (index);
-    layerBGroup = index;
-
-    juce::SpinLock::ScopedLockType lock (bankLock);
-    bankB = groups[(size_t) index].bank;
-}
-
 void NayAudioProcessor::renameGroup (int index, const juce::String& newName)
 {
     if (index < 0 || index >= (int) groups.size() || newName.trim().isEmpty())
@@ -409,42 +384,59 @@ double NayAudioProcessor::noteTarget (int note) const
     return (double) note + (double) off[note % 12] * 0.01;
 }
 
-// Kontakt-style zone lookup: key range + velocity range, closest root wins.
+// Zone lookup + background sample variation.
+// The closest sample for the key is found with the Kontakt-style zones (key range + velocity range). Then every
+// key press picks a RANDOM sample among the neighbours of that sample (one or two roots above / below) in the
+// same instrument. The sample is pitch-shifted by the engine (rate = 2^((note - root)/12)), so the pressed key
+// always sounds at its own pitch - the maqam / quarter-tone tuning is not affected. Never the same sample twice.
 std::shared_ptr<NaySample> NayAudioProcessor::pickSample (const NayBank* b, int note, int vel)
 {
     if (b == nullptr)
         return nullptr;
 
-    int bestD = 100000;
+    int bestD = 100000, bestRoot = 60;
     for (const auto& s : *b)
         if (note >= s->lo.load() && note <= s->hi.load() && vel >= s->vlo.load() && vel <= s->vhi.load())
-            bestD = juce::jmin (bestD, std::abs (s->root.load() - note));
+        {
+            const int d = std::abs (s->root.load() - note);
+            if (d < bestD) { bestD = d; bestRoot = s->root.load(); }
+        }
 
     if (bestD == 100000)
         return nullptr;
 
-    // every sample of the same root note (C4.wav, C4_2.wav, C4_3.wav ...) is a variation of this key
-    int idx[32];
+    // which roots exist for this velocity
+    bool present[128] = {};
+    for (const auto& s : *b)
+        if (vel >= s->vlo.load() && vel <= s->vhi.load())
+            present[juce::jlimit (0, 127, s->root.load())] = true;
+
+    bool allowed[128] = {};
+    allowed[juce::jlimit (0, 127, bestRoot)] = true;
+    for (int dir = -1; dir <= 1; dir += 2)
+    {
+        int found = 0;
+        for (int r = bestRoot + dir; r >= 0 && r <= 127 && found < 2 && std::abs (r - bestRoot) <= 12; r += dir)
+            if (present[r]) { allowed[r] = true; ++found; }
+    }
+
+    int idx[64];
     int n = 0;
-    for (int i = 0; i < (int) b->size() && n < 32; ++i)
+    for (int i = 0; i < (int) b->size() && n < 64; ++i)
     {
         const auto& s = *(*b)[(size_t) i];
-        if (note >= s.lo.load() && note <= s.hi.load() && vel >= s.vlo.load() && vel <= s.vhi.load()
-            && std::abs (s.root.load() - note) == bestD)
+        if (vel >= s.vlo.load() && vel <= s.vhi.load() && allowed[juce::jlimit (0, 127, s.root.load())])
             idx[n++] = i;
     }
 
-    int pick = 0;
-    if (n > 1 && pRrMode == 1)
-        pick = rrCount++ % n;
-    else if (n > 1 && pRrMode == 2)
-    {
-        pick = rng.nextInt (n);
-        if (pick == lastRand)
-            pick = (pick + 1 + rng.nextInt (n - 1)) % n;   // never the same variation twice in a row
-        lastRand = pick;
-    }
+    if (n == 0)
+        return nullptr;
 
+    int pick = rng.nextInt (n);
+    if (n > 1 && (*b)[(size_t) idx[pick]].get() == lastPicked)
+        pick = (pick + 1 + rng.nextInt (n - 1)) % n;     // never the same sample twice in a row
+
+    lastPicked = (*b)[(size_t) idx[pick]].get();
     return (*b)[(size_t) idx[pick]];
 }
 
@@ -456,78 +448,22 @@ void NayAudioProcessor::applyVelocity (NayVoice& v, int vel)
     v.velFc = 18000.f + (soft - 18000.f) * pVelSens;
 }
 
-// Real-time portamento: the faster you move between keys, the shorter the slide (max = PORTA TIME).
-static void portaFromGap (NayVoice& v, juce::int64 gapSamples, double sr, float maxMs)
+void NayAudioProcessor::startVoice (NayVoice& v, int note, int vel, const std::shared_ptr<const NayBank>& a)
 {
-    const double gapMs = (double) gapSamples * 1000.0 / sr;
-    v.glideMs = (float) juce::jlimit (5.0, (double) juce::jmax (5.0f, maxMs), gapMs * 0.6);
-}
-
-// Variation from the SAME sample (no extra files needed): every key press gets a slightly different
-// pitch, start point, tone and level, so repeated notes never sound identical.
-void NayAudioProcessor::applyVariation (NayVoice& v)
-{
-    v.detune = 0.0f;
-    if (pRrMode == 0 || pRrAmount <= 0.001f)
-        return;
-
-    static const float cents[6] = { 0.f, 5.f, -4.f, 3.f, -6.f, 2.f };
-    static const float startMs[6] = { 0.f, 12.f, 5.f, 20.f, 8.f, 16.f };
-    static const float tone[6] = { 1.0f, 0.9f, 1.1f, 0.85f, 1.05f, 0.95f };
-    static const float gainDb[6] = { 0.f, -0.8f, 0.5f, -1.2f, 0.3f, -0.5f };
-
-    float c, st, tn, gd;
-    if (pRrMode == 1)       // Round Robin: cycles through 6 preset variations
-    {
-        const int i = varCount++ % 6;
-        c = cents[i]; st = startMs[i]; tn = tone[i]; gd = gainDb[i];
-    }
-    else                    // Random: fresh random values every press (never the same preset twice in a row)
-    {
-        c = (rng.nextFloat() * 2.0f - 1.0f) * 6.0f;
-        st = rng.nextFloat() * 20.0f;
-        tn = 0.85f + rng.nextFloat() * 0.25f;
-        gd = (rng.nextFloat() * 2.0f - 1.0f) * 1.2f;
-    }
-
-    const float a = pRrAmount;
-    v.detune = c * a * 0.01f;
-    v.velFc *= 1.0f + (tn - 1.0f) * a;
-    v.velGain *= juce::Decibels::decibelsToGain (gd * a);
-
-    if (v.sa != nullptr) v.posA = (double) (st * a) * 0.001 * v.sa->sampleRate;
-    if (v.sb != nullptr) v.posB = (double) (st * a) * 0.001 * v.sb->sampleRate;
-}
-
-void NayAudioProcessor::startVoice (NayVoice& v, int note, int vel,
-                                    const std::shared_ptr<const NayBank>& a,
-                                    const std::shared_ptr<const NayBank>& b)
-{
-    const bool bOn = b != nullptr && ! b->empty() && vel >= pLayerBVel;
-
-    std::shared_ptr<NaySample> sa, sb;
-    if (bOn)
-        sb = pickSample (b.get(), note, vel);
-
-    if (! (sb != nullptr && pLayerBMode == 0)) // Switch mode: B replaces A
-        sa = pickSample (a.get(), note, vel);
-
-    if (sa == nullptr && sb == nullptr)
+    auto sa = pickSample (a.get(), note, vel);
+    if (sa == nullptr)
         return;
 
     v.sa = sa;
-    v.sb = sb;
+    v.sb = nullptr;
     v.posA = v.posB = 0.0;
     v.lp = 0.0f;
     v.note = note;
     v.target = noteTarget (note);
-    v.pitch = (pPortaOn && lastPitch >= 0.0) ? lastPitch : v.target; // portamento: slide in from the previous note
-    portaFromGap (v, curPos - lastOnPos, sr, pPortaTime);
-    lastOnPos = curPos;
-    lastPitch = v.target;
+    v.pitch = v.target;
+    v.detune = 0.0f;
     v.vibPhase = 0.0;
     applyVelocity (v, vel);
-    applyVariation (v);
     v.gate = true;
     v.age = ++ageCounter;
     v.adsr.noteOn();
@@ -543,9 +479,7 @@ void NayAudioProcessor::allNotesOff()
     }
 }
 
-void NayAudioProcessor::handleMidi (const juce::MidiMessage& msg,
-                                    const std::shared_ptr<const NayBank>& a,
-                                    const std::shared_ptr<const NayBank>& b)
+void NayAudioProcessor::handleMidi (const juce::MidiMessage& msg, const std::shared_ptr<const NayBank>& a)
 {
     if (msg.isNoteOn())
     {
@@ -560,20 +494,17 @@ void NayAudioProcessor::handleMidi (const juce::MidiMessage& msg,
             held.push_back (n);
 
             auto& v = voices[0];
-            if (pLegato && wasHeld && v.adsr.isActive() && (v.sa != nullptr || v.sb != nullptr))
+            if (pLegato && wasHeld && v.adsr.isActive() && v.sa != nullptr)
             {
                 // legato: no retrigger, just glide
                 v.note = n;
                 v.target = noteTarget (n);
-                portaFromGap (v, curPos - lastOnPos, sr, pPortaTime);
-                lastOnPos = curPos;
-                lastPitch = v.target;
                 applyVelocity (v, vel);
                 v.gate = true;
             }
             else
             {
-                startVoice (v, n, vel, a, b);
+                startVoice (v, n, vel, a);
             }
         }
         else
@@ -587,7 +518,7 @@ void NayAudioProcessor::handleMidi (const juce::MidiMessage& msg,
                 if (v.age < oldest->age) oldest = &v;
             }
 
-            startVoice (freeVoice != nullptr ? *freeVoice : *oldest, n, vel, a, b);
+            startVoice (freeVoice != nullptr ? *freeVoice : *oldest, n, vel, a);
         }
     }
     else if (msg.isNoteOff())
@@ -613,7 +544,7 @@ void NayAudioProcessor::handleMidi (const juce::MidiMessage& msg,
                 }
                 else
                 {
-                    startVoice (v, held.back(), juce::jmax (1, heldVel[held.back()]), a, b);
+                    startVoice (v, held.back(), juce::jmax (1, heldVel[held.back()]), a);
                 }
             }
         }
@@ -653,7 +584,7 @@ void NayAudioProcessor::renderVoice (NayVoice& v, juce::AudioBuffer<float>& buf,
 
     NaySample* ss[2] = { v.sa.get(), v.sb.get() };
     double* pos[2] = { &v.posA, &v.posB };
-    const float lg[2] = { 1.0f, pLayerBGain };
+    const float lg[2] = { 1.0f, 1.0f };
 
     const float* src[2] = { nullptr, nullptr };
     double lEnd[2] = { 0, 0 }, lStart[2] = { 0, 0 }, rateBase[2] = { 0, 0 };
@@ -678,7 +609,7 @@ void NayAudioProcessor::renderVoice (NayVoice& v, juce::AudioBuffer<float>& buf,
     float* L = buf.getWritePointer (0, start);
     float* R = buf.getNumChannels() > 1 ? buf.getWritePointer (1, start) : nullptr;
 
-    const float gt = pPortaOn ? v.glideMs : pGlide;
+    const float gt = pGlide;
     const double glideCoef = gt < 1.0f ? 1.0 : 1.0 - std::exp (-1.0 / ((double) gt * 0.001 * sr));
     const double depthCents = juce::jmin (100.0, (double) pVibDepth + (double) modWheel * 50.0);
     const double bendSemis = (double) bendNorm * (double) pPbRange;
@@ -741,23 +672,28 @@ void NayAudioProcessor::renderAll (juce::AudioBuffer<float>& buf, int start, int
 }
 
 //==============================================================================
-// KRONOS model: heavy, smooth saturation with pushed mids and rounded highs (lead / flute-like sustain).
+// KRONOS model: a smooth, heavy "saturated lead" (electric-guitar lead / Kronos style) - warm low end, soft
+// rounded saturation curve, extra shine in the upper mids, and level matching so the instrument stays at the same
+// loudness whether the effect is on or off, at any DRIVE / AMOUNT.
 void NayAudioProcessor::processSaturation (juce::AudioBuffer<float>& buffer)
 {
     if (! pSatOn)
         return;
 
     const float drive = pSatDrive, mix = pSatMix;
-    const float k = 1.0f + drive * 30.0f;
-    const float bias = 0.15f * drive;
+    const float fs = (float) sr;
+    const float twoPi = juce::MathConstants<float>::twoPi;
+    const float k = 1.0f + drive * 9.0f;           // soft curve (no hard clipping)
+    const float bias = 0.08f * drive;               // tiny asymmetry = even harmonics, smooth and warm
     const float tb = std::tanh (bias);
-    const float comp = 1.0f / (1.0f + drive * 0.9f);
-    const float fc = 6500.0f - 3000.0f * drive;   // rounded highs
-    const float aHi = 1.0f - std::exp (-juce::MathConstants<float>::twoPi * 1800.0f / (float) sr);
-    const float aLo = 1.0f - std::exp (-juce::MathConstants<float>::twoPi * 400.0f / (float) sr);
-    const float lpA = 1.0f - std::exp (-juce::MathConstants<float>::twoPi * fc / (float) sr);
+    const float aMid  = 1.0f - std::exp (-twoPi * 1500.0f / fs);
+    const float aLow  = 1.0f - std::exp (-twoPi * 220.0f / fs);
+    const float aTop  = 1.0f - std::exp (-twoPi * juce::jmin (11000.0f, 0.45f * fs) / fs);
+    const float aSpk  = 1.0f - std::exp (-twoPi * 3500.0f / fs);
+    const float aEnv  = 1.0f - std::exp (-1.0f / (0.05f * fs));
+    const float aGain = 1.0f - std::exp (-1.0f / (0.02f * fs));
 
-    auto shape = [=] (float x) { const float a = std::tanh (k * x + bias) - tb; return std::tanh (a * (1.0f + drive * 1.5f)) * comp; };
+    auto shape = [=] (float x) { return std::tanh (k * x + bias) - tb; };
 
     const int n = buffer.getNumSamples();
     const int chans = juce::jmin (buffer.getNumChannels(), 2);
@@ -770,23 +706,37 @@ void NayAudioProcessor::processSaturation (juce::AudioBuffer<float>& buffer)
         {
             const float xd = d[i];
 
-            // KRONOS: push the mids (400 Hz - 1.8 kHz) into the shaper, then round the top end
-            satHi[ch] += aHi * (xd - satHi[ch]);
-            satLo[ch] += aLo * (xd - satLo[ch]);
-            const float x = xd + (satHi[ch] - satLo[ch]) * (0.8f * drive);
+            satHi[ch] += aMid * (xd - satHi[ch]);   // low-passed at 1.5 kHz
+            satLo[ch] += aLow * (xd - satLo[ch]);   // low-passed at 220 Hz
+            // pre-shaper: a little warmth from the lows, and lift the mids / highs (shine) instead of rolling them off
+            const float x = xd + satLo[ch] * (0.35f * drive) + (xd - satHi[ch]) * (0.5f * drive);
 
             const float xm = 0.5f * (satXPrev[ch] + x);
             satXPrev[ch] = x;
 
             float y = 0.5f * (shape (xm) + shape (x));
-            satLp[ch] += lpA * (y - satLp[ch]);
+
+            satLp[ch] += aTop * (y - satLp[ch]);    // only removes fizz above 11 kHz
             y = satLp[ch];
+
+            satLp2[ch] += aSpk * (y - satLp2[ch]);
+            y += (y - satLp2[ch]) * (0.25f * drive); // sparkle
 
             const float hp = y - satDcX[ch] + 0.995f * satDcY[ch]; // DC blocker
             satDcX[ch] = y;
             satDcY[ch] = hp;
 
-            d[i] = xd + (hp - xd) * mix;
+            // level match: keep the loudness of the wet signal equal to the loudness of the input
+            satEnvIn[ch]  += aEnv * (xd * xd - satEnvIn[ch]);
+            satEnvOut[ch] += aEnv * (hp * hp - satEnvOut[ch]);
+            if (satEnvIn[ch] > 1.0e-8f)
+            {
+                const float target = juce::jlimit (0.05f, 8.0f, std::sqrt (satEnvIn[ch] / (satEnvOut[ch] + 1.0e-9f)));
+                satG[ch] += aGain * (target - satG[ch]);
+            }
+
+            const float wet = hp * satG[ch];
+            d[i] = xd + (wet - xd) * mix;
         }
     }
 }
@@ -1052,14 +1002,11 @@ void NayAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     juce::ScopedNoDenormals noDenormals;
     buffer.clear();
 
-    std::shared_ptr<const NayBank> a, b;
+    std::shared_ptr<const NayBank> a;
     {
         juce::SpinLock::ScopedTryLockType lock (bankLock);
         if (lock.isLocked())
-        {
             a = bankA;
-            b = bankB;
-        }
     }
 
     pGain      = getP (P_gain);
@@ -1075,15 +1022,9 @@ void NayAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     pRvLvl     = getP (P_rvLevel);
     pVelSens   = getP (P_velOn) > 0.5f ? 0.85f : 0.0f;
     pPbRange   = getP (P_pbRange);
-    pLayerBGain = dbToGainOrOff (getP (P_layerBLevel));
-    pLayerBVel = (int) getP (P_layerBVel);
-    pLayerBMode = (int) getP (P_layerBMode);
     pSatOn = getP (P_satOn) > 0.5f;   pSatDrive = getP (P_satDrive);  pSatMix = getP (P_satMix);
     pWahOn = getP (P_wahOn) > 0.5f;   pWahPos = getP (P_wahPos);      pWahRate = getP (P_wahRate);  pWahMix = getP (P_wahMix);
     pPhOn = getP (P_phOn) > 0.5f;     pPhRate = getP (P_phRate);      pPhDepth = getP (P_phDepth);  pPhMix = getP (P_phMix);
-    pRrMode = (int) getP (P_rrMode);
-    pRrAmount = getP (P_rrAmount);
-    pPortaOn = getP (P_portaOn) > 0.5f;  pPortaTime = getP (P_portaTime);
     pArpOn = getP (P_arpOn) > 0.5f;  pArpMode = (int) getP (P_arpMode);  pArpRate = (int) getP (P_arpRate);
     pArpOct = (int) getP (P_arpOct); pArpGate = getP (P_arpGate);        pArpHold = getP (P_arpHold) > 0.5f;
 
@@ -1142,8 +1083,36 @@ void NayAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
         }
     }
 
+    // TRANSPOSE (semitones) + OCTAVE (12 semitones): shifts the notes that get played. The note-off always
+    // uses the same shifted note as its note-on, so changing the shift while holding keys never sticks a note.
+    const int shiftSt = (int) std::lround (getP (P_transpose)) + 12 * (int) std::lround (getP (P_octave));
+    juce::MidiBuffer shifted;
+    for (const auto metadata : midi)
+    {
+        auto m = metadata.getMessage();
+        if (m.isNoteOn())
+        {
+            const int orig = m.getNoteNumber();
+            const int nn = orig + shiftSt;
+            if (nn < 0 || nn > 127) { sentNote[orig] = -1; continue; }
+            sentNote[orig] = nn + 1;
+            m.setNoteNumber (nn);
+        }
+        else if (m.isNoteOff())
+        {
+            const int orig = m.getNoteNumber();
+            const int sn = sentNote[orig];
+            sentNote[orig] = 0;
+            if (sn < 0) continue;
+            const int nn = sn > 0 ? sn - 1 : orig + shiftSt;
+            if (nn < 0 || nn > 127) continue;
+            m.setNoteNumber (nn);
+        }
+        shifted.addEvent (m, metadata.samplePosition);
+    }
+
     juce::MidiBuffer arpOut;
-    const juce::MidiBuffer* src = &midi;
+    const juce::MidiBuffer* src = &shifted;
 
     if (pArpOn)
     {
@@ -1153,7 +1122,7 @@ void NayAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
                 if (auto b = ppos->getBpm())
                     bpm = *b;
 
-        runArp (midi, arpOut, buffer.getNumSamples(), bpm);
+        runArp (shifted, arpOut, buffer.getNumSamples(), bpm);
         src = &arpOut;
         arpWasOn = true;
     }
@@ -1172,7 +1141,7 @@ void NayAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
         renderAll (buffer, pos, p - pos);
         pos = p;
         curPos = clockPos + p;
-        handleMidi (metadata.getMessage(), a, b);
+        handleMidi (metadata.getMessage(), a);
     }
 
     renderAll (buffer, pos, total - pos);
@@ -1202,7 +1171,6 @@ void NayAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 
     juce::ValueTree gs ("GROUPS");
     gs.setProperty ("active", activeGroup, nullptr);
-    gs.setProperty ("layerB", layerBGroup, nullptr);
     for (const auto& g : groups)
     {
         juce::ValueTree c ("GROUP");
@@ -1272,7 +1240,6 @@ void NayAudioProcessor::setStateInformation (const void* data, int size)
             {
                 groups.clear();
                 activeGroup = -1;
-                layerBGroup = -1;
 
                 for (int i = 0; i < gs.getNumChildren(); ++i)
                 {
@@ -1292,10 +1259,6 @@ void NayAudioProcessor::setStateInformation (const void* data, int size)
                 const int a = (int) gs.getProperty ("active", -1);
                 if (a >= 0 && a < (int) groups.size())
                     selectGroup (a);
-
-                const int lb = (int) gs.getProperty ("layerB", -1);
-                if (lb >= 0 && lb < (int) groups.size())
-                    selectLayerB (lb);
             }
         }
     }
