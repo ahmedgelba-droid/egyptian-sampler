@@ -830,15 +830,15 @@ void NayAudioProcessor::processSaturation (juce::AudioBuffer<float>& buffer)
     const float twoPi = juce::MathConstants<float>::twoPi;
     const float bias = 0.06f * drive;
     const float tb = std::tanh (bias);
-    const float aHp   = 1.0f - std::exp (-twoPi * 90.0f / fs);
-    const float aTop  = 1.0f - std::exp (-twoPi * juce::jmin (6500.0f, 0.45f * fs) / fs);   // guitar cabinet roll-off
+    const float aHp   = 1.0f - std::exp (-twoPi * 300.0f / fs);
+    const float aTop  = 1.0f - std::exp (-twoPi * juce::jmin (4700.0f, 0.45f * fs) / fs);   // guitar cabinet roll-off
     const float aBass = 1.0f - std::exp (-twoPi * 200.0f / fs);
     const float aAtt  = 1.0f - std::exp (-1.0f / (0.004f * fs));
     const float aRel  = 1.0f - std::exp (-1.0f / (0.18f * fs));
     const float aEnv  = 1.0f - std::exp (-1.0f / (0.05f * fs));
     const float aGain = 1.0f - std::exp (-1.0f / (0.02f * fs));
-    const float sus = 0.8f * drive;
-    const float aShine = 1.0f - std::exp (-twoPi * 2500.0f / fs);
+    const float sus = 0.3f * drive;
+    const float aShine = 1.0f - std::exp (-twoPi * 3968.0f / fs);
 
     const float splitHz[3] = { 250.0f, 1400.0f, 4500.0f };
     float ac[3];
@@ -850,8 +850,8 @@ void NayAudioProcessor::processSaturation (juce::AudioBuffer<float>& buffer)
     float kb[4], norm[4];
     for (int b = 0; b < 4; ++b)
     {
-        kb[b] = 1.0f + drive * 26.0f * mult[b];
-        norm[b] = tone[b] / std::pow (kb[b], 0.7f);
+        kb[b] = 1.0f + drive * 6.8f * mult[b];
+        norm[b] = tone[b] / kb[b];
     }
 
     const int n = buffer.getNumSamples();
@@ -870,7 +870,7 @@ void NayAudioProcessor::processSaturation (juce::AudioBuffer<float>& buffer)
 
             const float ax = std::abs (x);
             satLev[ch] += (ax > satLev[ch] ? aAtt : aRel) * (ax - satLev[ch]);
-            x *= juce::jlimit (1.0f, 8.0f, std::pow (0.2f / (satLev[ch] + 1.0e-4f), sus));   // sustain
+            x *= juce::jlimit (1.0f, 8.0f, std::pow (0.55f / (satLev[ch] + 1.0e-4f), sus));   // sustain
 
             // 4-band split (complementary, so the bands add back up to the input)
             float rest = x, band[4];
@@ -890,10 +890,10 @@ void NayAudioProcessor::processSaturation (juce::AudioBuffer<float>& buffer)
                 y += (std::tanh (kb[b] * band[b] + bias) - tb) * norm[b];
             y *= 1.6f;
             satLo[ch] += aShine * (y - satLo[ch]);
-            y += (y - satLo[ch]) * (0.45f * drive);       // lead shine above 2.5 kHz
+            y += (y - satLo[ch]) * (3.6f * drive);        // lead shine above 4 kHz (fitted to the reference recording)
 
             satHi[ch] += aBass * (y - satHi[ch]);            // amp BASS: warm low end
-            y += satHi[ch] * (0.30f * drive);
+            y += satHi[ch] * (0.04f * drive);
 
             satLp[ch] += aTop * (y - satLp[ch]);             // cabinet: 2-pole roll-off at 6.5 kHz
             satLp2[ch] += aTop * (satLp[ch] - satLp2[ch]);

@@ -1537,6 +1537,13 @@ void NayAudioProcessorEditor::rebuildBackground()
     for (int x = 0; x < w; x += 40) g.drawVerticalLine (x, 0.0f, (float) h);
     for (int y = 0; y < h; y += 40) g.drawHorizontalLine (y, 0.0f, (float) w);
 
+    g.setGradientFill (juce::ColourGradient (neon::cyan.withAlpha (0.07f), (float) w * 0.5f, (float) h * 0.30f,
+                                             juce::Colours::transparentBlack, (float) w * 0.5f, (float) h, true));
+    g.fillAll();
+    g.setGradientFill (juce::ColourGradient (neon::magenta.withAlpha (0.05f), (float) w, (float) h,
+                                             juce::Colours::transparentBlack, (float) w * 0.4f, (float) h * 0.4f, true));
+    g.fillAll();
+
     juce::Random cr (11);
     for (int i = 0; i < 40; ++i)
     {
@@ -1631,6 +1638,15 @@ void NayAudioProcessorEditor::drawPanel (juce::Graphics& g, juce::Rectangle<int>
     g.drawRoundedRectangle (r.reduced (3.5f), 7.0f, 1.0f);
     g.setGradientFill (juce::ColourGradient (juce::Colour (0xfff3d27a), r.getX(), r.getY(), juce::Colour (0xff6b4a14), r.getRight(), r.getBottom(), false));
     g.drawRoundedRectangle (r.reduced (1.0f), 9.0f, 2.2f);
+    g.setColour (accent.withAlpha (0.10f));
+    g.drawRoundedRectangle (r.expanded (2.0f), 11.0f, 3.5f);
+    g.setColour (accent.withAlpha (0.55f));
+    g.fillRect (r.getX() + 36.0f, r.getY() + 1.5f, r.getWidth() - 72.0f, 1.2f);
+    g.setColour (accent.withAlpha (0.25f));
+    g.fillRect (r.getX() + 36.0f, r.getBottom() - 2.7f, r.getWidth() - 72.0f, 1.0f);
+    g.setColour (juce::Colours::white.withAlpha (0.018f));
+    for (float yy = r.getY() + 26.0f; yy < r.getBottom() - 6.0f; yy += 4.0f)
+        g.fillRect (r.getX() + 6.0f, yy, r.getWidth() - 12.0f, 1.0f);
     for (auto p : { r.getTopLeft(), r.getTopRight(), r.getBottomLeft(), r.getBottomRight() })
     {
         const float dx = p.x < r.getCentreX() ? 8.0f : -8.0f, dy = p.y < r.getCentreY() ? 8.0f : -8.0f;
@@ -1669,6 +1685,10 @@ void NayAudioProcessorEditor::drawLcd (juce::Graphics& g, juce::Rectangle<int> r
     g.drawRoundedRectangle (r.expanded (1.5f), 9.0f, 3.0f);
     g.setColour (accent.withAlpha (0.85f));
     g.drawRoundedRectangle (r.reduced (0.5f), 8.0f, 1.2f);
+
+    g.setColour (accent.withAlpha (0.07f));
+    for (float yy = r.getY() + 3.0f; yy < r.getBottom() - 3.0f; yy += 3.0f)
+        g.fillRect (r.getX() + 3.0f, yy, r.getWidth() - 6.0f, 1.0f);
 
     auto inner = ri.reduced (38, 0);
     g.setColour (accent.withAlpha (0.7f));
@@ -1739,23 +1759,24 @@ void NayAudioProcessorEditor::paint (juce::Graphics& g)
         g.drawText (t, midiRect.withTrimmedLeft (28), juce::Justification::centredLeft, false);
     }
 
-    auto f = juce::Font (juce::FontOptions ("Georgia", 30.0f, juce::Font::bold)).withExtraKerningFactor (0.1f);
+    // futuristic title
+    auto f = juce::Font (juce::FontOptions ("Segoe UI", 30.0f, juce::Font::bold)).withExtraKerningFactor (0.3f);
     g.setFont (f);
-    for (int d = 3; d >= 1; --d)
+    for (int d = 4; d >= 1; --d)
     {
-        g.setColour (neon::amber.withAlpha (0.07f));
-        g.drawText ("EGYPTIAN SAMPLER", 92 - d, 8 - d, 520 + 2 * d, 36 + 2 * d, juce::Justification::centredLeft, false);
+        g.setColour (neon::cyan.withAlpha (0.05f));
+        g.drawText ("EGYPTIAN SAMPLER", 92 - d, 8 - d, 540 + 2 * d, 36 + 2 * d, juce::Justification::centredLeft, false);
     }
-    g.setColour (neon::amber.brighter (0.3f));
-    g.drawText ("EGYPTIAN SAMPLER", 92, 8, 520, 36, juce::Justification::centredLeft, false);
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xfffbe9a8), 0.0f, 10.0f, juce::Colour (0xffc8962c), 0.0f, 44.0f, false));
+    g.drawText ("EGYPTIAN SAMPLER", 92, 8, 540, 36, juce::Justification::centredLeft, false);
 
-    g.setFont (uiFont (10.5f).withExtraKerningFactor (0.25f));
+    g.setFont (uiFont (10.5f).withExtraKerningFactor (0.3f));
     g.setColour (neon::cyan);
     g.drawText ("MAQAM ENGINE  //  MICROTONAL SAMPLER", 94, 42, 520, 14, juce::Justification::centredLeft, false);
-
-    g.setFont (juce::Font (juce::FontOptions ("Segoe UI", 22.0f, juce::Font::bold)));
-    g.setColour (neon::amber);
-    g.drawText (juce::String (L"سامبلر مصري"), 370, 12, 260, 36, juce::Justification::centredRight, false);
+    g.setColour (neon::cyan.withAlpha (0.5f));
+    g.fillRect (94, 58, 300, 1);
+    g.setColour (neon::cyan);
+    g.fillRect (94, 57, 40, 3);
 }
 
 void NayAudioProcessorEditor::resized()
