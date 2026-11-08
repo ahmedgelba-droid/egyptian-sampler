@@ -1,0 +1,36 @@
+name: Build Egyptian Sampler (Windows)
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -B build
+      - name: Build
+        run: cmake --build build --config Release
+      - name: Add Data folder (Library + Factory Presets) with the plugin, if the repo has one
+        shell: pwsh
+        run: |
+          if (Test-Path Data) {
+            $vst = Get-ChildItem "build/*_artefacts/Release/VST3" -Directory -Filter "*.vst3" | Select-Object -First 1
+            if ($vst) {
+              $res = Join-Path $vst.FullName "Contents/Resources"
+              New-Item -ItemType Directory -Force -Path $res | Out-Null
+              Copy-Item -Path "Data/*" -Destination $res -Recurse -Force
+            }
+            $sa = Get-Item "build/*_artefacts/Release/Standalone" | Select-Object -First 1
+            if ($sa) {
+              $dst = Join-Path $sa.FullName "Egyptian Sampler Data"
+              New-Item -ItemType Directory -Force -Path $dst | Out-Null
+              Copy-Item -Path "Data/*" -Destination $dst -Recurse -Force
+            }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Egyptian-Sampler-Windows
+          path: |
+            build/*_artefacts/Release/VST3
+            build/*_artefacts/Release/Standalone

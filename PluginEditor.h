@@ -109,6 +109,20 @@ private:
     juce::Label rootLabel, fileLabel;
 };
 
+// Small list model driven by lambdas (used by the Browse page).
+class LambdaListModel : public juce::ListBoxModel
+{
+public:
+    std::function<int()> getCount;
+    std::function<juce::String (int)> getText;
+    std::function<void (int)> onSelect, onDouble;
+
+    int getNumRows() override { return getCount ? getCount() : 0; }
+    void paintListBoxItem (int row, juce::Graphics& g, int w, int hgt, bool selected) override;
+    void selectedRowsChanged (int lastRowSelected) override { if (onSelect && lastRowSelected >= 0) onSelect (lastRowSelected); }
+    void listBoxItemDoubleClicked (int row, const juce::MouseEvent&) override { if (onDouble) onDouble (row); }
+};
+
 class NayAudioProcessorEditor : public juce::AudioProcessorEditor, private juce::Timer
 {
 public:
@@ -150,14 +164,36 @@ private:
     void rebuildBackground();
     void refreshGroups();
     void stepGroup (int delta);
+    void stepDuo (int delta);
+    void showView (int v);                       // 0 main, 1 browse, 2 mixer, 3 settings
+    void rebuildBrowse (int forceCat = -1);
+    void rebuildShown();
+    void updateBrowseButtons();
+    void promptName (const juce::String& title, const juce::String& initial, std::function<void (juce::String)> cb);
 
     NayAudioProcessor& proc;
     NeonLookAndFeel laf;
     bool built = false;
 
-    Page page, settings;       // main page / settings page (layers, folders, mapping)
+    Page page, settings, browse, mixer;       // main / settings (folders, mapping) / browse / mixer
     MapView mapView;
-    juce::TextButton mapButton { "SETTINGS" };
+    juce::TextButton mapButton { "SETTINGS" }, browseButton { "BROWSE" }, mixerButton { "MIXER" };
+    int view = 0;
+
+    // ---- browse page ----
+    struct BrowseEntry { juce::String name; int group = -1; juce::File preset; bool user = false; };
+    std::vector<std::pair<int, juce::String>> cats;     // kind: 0 all, 1 category, 2 factory presets, 3 user presets
+    std::vector<BrowseEntry> shown;
+    int selCat = 0;
+    LambdaListModel catModel, instModel;
+    juce::ListBox catList, instList;
+    juce::TextEditor searchBox;
+    juce::TextButton loadBtn { "LOAD" }, duoBtn { "ADD AS DUO" }, noDuoBtn { "REMOVE DUO" },
+                     saveBtn { "SAVE PRESET" }, renPresetBtn { "RENAME PRESET" }, delPresetBtn { "DELETE PRESET" };
+    juce::Label browseInfo;
+    juce::ToggleButton *tMainMute {}, *tDuoMute {};
+    Knob *kMainLvl {}, *kMainPan {}, *kDuoLvl {}, *kDuoPan {}, *kMaster {};
+    juce::Rectangle<int> pMixMain, pMixDuo, pMixMaster;
 
     std::vector<std::unique_ptr<Knob>> knobs;
     Knob *kGain {}, *kAtk {}, *kRel {}, *kGlide {}, *kVibD {}, *kVibR {}, *kPb {},
@@ -168,8 +204,8 @@ private:
     std::vector<std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>> toggleAtts;
     juce::ToggleButton *tMono {}, *tLegato {}, *tVel {}, *tArp {}, *tArpHold {}, *tSat {}, *tWah {}, *tPh {};
 
-    juce::ComboBox maqamBox, rootBox, arpModeBox, arpRateBox;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> maqamAtt, rootAtt, arpModeAtt, arpRateAtt;
+    juce::ComboBox arpModeBox, arpRateBox;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> arpModeAtt, arpRateAtt;
 
     std::array<std::unique_ptr<NoteKey>, 12> keys;     // indexed by pitch class 0..11 (C..B)
 
@@ -178,8 +214,9 @@ private:
     juce::ShapeButton prevA2 { "prevA2", neon::cyan, neon::cyan.brighter (0.4f), neon::cyan.darker (0.3f) };
     juce::ShapeButton nextA2 { "nextA2", neon::cyan, neon::cyan.brighter (0.4f), neon::cyan.darker (0.3f) };
     juce::TextButton renameButton { "RENAME" };
-    juce::TextButton minusBtn { "-" }, plusBtn { "+" }, cancelBtn { "CANCEL" };
-    void stepRoot (int d);
+    juce::TextButton resetKeysBtn { "RESET KEYS" };
+    juce::ShapeButton prevD { "prevD", neon::amber, neon::amber.brighter (0.4f), neon::amber.darker (0.3f) };
+    juce::ShapeButton nextD { "nextD", neon::amber, neon::amber.brighter (0.4f), neon::amber.darker (0.3f) };
     juce::TextButton addButton { "ADD FOLDER" };
     juce::Label info;
     std::unique_ptr<juce::FileChooser> chooser;
@@ -198,7 +235,7 @@ private:
     juce::Rectangle<int> pWheels;
 
     juce::Image bgImage;
-    juce::Rectangle<int> pageRect, lcdA, lcdA2;
+    juce::Rectangle<int> pageRect, lcdA, lcdD, lcdA2;
     juce::Rectangle<int> pVoice, pMaqam, pSat, pWah, pPh, pDelay, pReverb, pArp;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (NayAudioProcessorEditor)

@@ -27,6 +27,7 @@ struct NayGroup
     juce::String path;
     std::shared_ptr<const NayBank> bank;  // loaded lazily
     std::vector<NayZoneOv> zones;         // saved zone overrides
+    juce::String category;                // e.g. "Stringed", "Flutes" (folder that contains the instrument folder)
 };
 
 struct NayVoice
@@ -35,7 +36,7 @@ struct NayVoice
     juce::ADSR adsr;
     double posA = 0.0, posB = 0.0, pitch = 60.0, target = 60.0, vibPhase = 0.0;
     float detune = 0.f;
-    float velGain = 1.0f, velFc = 18000.f, lp = 0.f, glideMs = 100.f;
+    float velGain = 1.0f, velFc = 18000.f, lp = 0.f, lpB = 0.f, glideMs = 100.f;
     int note = -1;
     bool gate = false;
     juce::uint64 age = 0;
@@ -45,13 +46,14 @@ enum NayParam
 {
     P_gain, P_attack, P_release, P_glide, P_vibDepth, P_vibRate, P_mono, P_legato,
     P_delayTime, P_delayFb, P_delayLevel, P_rvSize, P_rvLevel,
-    P_velSens, P_pbRange, P_maqam, P_root,
+    P_velSens, P_pbRange,
     P_satOn, P_satDrive, P_satMix,
     P_wahOn, P_wahPos, P_wahRate, P_wahMix,
     P_phOn, P_phRate, P_phDepth, P_phMix,
     P_velOn,
     P_arpOn, P_arpMode, P_arpRate, P_arpOct, P_arpGate, P_arpHold,
     P_transpose, P_octave,
+    P_mainLevel, P_mainPan, P_mainMute, P_duoLevel, P_duoPan, P_duoMute, P_master,
     P_count
 };
 
@@ -60,8 +62,11 @@ class NayAudioProcessor : public juce::AudioProcessor
 public:
     static constexpr int kNumVoices = 8;
     static const char* const paramIds[P_count];
-    static juce::StringArray maqamNames();
-    static float maqamOffset (int maqam, int pitchClass, int root);
+    // data folders (library / presets)
+    static juce::File dataRoot();
+    static juce::File libraryRoot();
+    static juce::File factoryPresetDir();
+    static juce::File userPresetDir();
 
     NayAudioProcessor();
     ~NayAudioProcessor() override = default;
@@ -91,7 +96,10 @@ public:
 
     // ---- instruments (message thread only) ----
     int addFolder (const juce::File& folder);
-    void selectGroup (int index);                 // layer A
+    void selectGroup (int index);                 // main instrument
+    void selectDuo (int index);                   // second instrument of the Duo (-1 = off)
+    int getDuoGroup() const { return duoGroup; }
+    juce::String getGroupCategory (int i) const { return groups[(size_t) i].category; }
     void renameGroup (int index, const juce::String& newName);
     void resetZones (int index);                  // back to automatic mapping
     int getNumGroups() const { return (int) groups.size(); }
@@ -102,6 +110,14 @@ public:
         return (groupIndex >= 0 && groupIndex < (int) groups.size()) ? groups[(size_t) groupIndex].bank : nullptr;
     }
     juce::String getSampleInfo() const { return sampleInfo; }
+
+    // presets (message thread)
+    bool savePreset (const juce::String& name);                 // into the User folder
+    bool loadPreset (const juce::File& file);
+    static juce::Array<juce::File> listPresets (bool factory);
+    static bool deletePreset (const juce::File& file);
+    static bool renamePreset (const juce::File& file, const juce::String& newName);
+    juce::String getPresetName() const { return currentPreset; }
 
     // last incoming MIDI event (for the monitor strip). kind: 0 none, 1 note on, 2 note off, 3 CC, 4 pitch bend
     void getMidiMonitor (int& kind, int& a, int& b, int& count) const { kind = monKind; a = monA; b = monB; count = monCount; }
@@ -136,13 +152,18 @@ private:
     static bool folderHasSamples (const juce::File& folder);
     static std::shared_ptr<const NayBank> loadBank (const juce::File& folder, const std::vector<NayZoneOv>& ov);
     static void autoZones (const NayBank& b);
-    std::shared_ptr<NaySample> pickSample (const NayBank* b, int note, int vel);
+    std::shared_ptr<NaySample> pickSample (const NayBank* b, int note, int vel, NaySample*& last);
+    static juce::String toStoredPath (const juce::String&);
+    static juce::String fromStoredPath (const juce::String&);
+    int scanFolder (const juce::File& folder);
+    juce::ValueTree buildState();
+    void applyState (const juce::ValueTree&);
 
-    void addGroup (const juce::String& name, const juce::String& path);
+    void addGroup (const juce::String& name, const juce::String& path, const juce::String& category);
     void ensureLoaded (int index);
     void syncZones();
-    void handleMidi (const juce::MidiMessage&, const std::shared_ptr<const NayBank>&);
-    void startVoice (NayVoice&, int note, int vel, const std::shared_ptr<const NayBank>&);
+    void handleMidi (const juce::MidiMessage&, const std::shared_ptr<const NayBank>&, const std::shared_ptr<const NayBank>&);
+    void startVoice (NayVoice&, int note, int vel, const std::shared_ptr<const NayBank>&, const std::shared_ptr<const NayBank>&);
     void allNotesOff();
     void renderVoice (NayVoice&, juce::AudioBuffer<float>&, int start, int num);
     void renderAll (juce::AudioBuffer<float>&, int start, int num);
@@ -158,11 +179,12 @@ private:
 
     // instruments
     std::vector<NayGroup> groups;
-    int activeGroup = -1;
+    int activeGroup = -1, duoGroup = -1;
+    juce::String currentPreset;
     juce::String sampleInfo { "No instruments yet - click Add Folder" };
 
     // banks used by the audio thread (swapped from the message thread)
-    std::shared_ptr<const NayBank> bankA;
+    std::shared_ptr<const NayBank> bankA, bankB;
     juce::SpinLock bankLock;
 
     std::atomic<float>* raws[P_count] {};
@@ -201,7 +223,9 @@ private:
     int pArpMode = 0, pArpRate = 1, pArpOct = 1;
     float pArpGate = 0.8f;
     juce::Random rng;
-    NaySample* lastPicked = nullptr;      // last sample used (compared only, never dereferenced)
+    NaySample* lastPicked = nullptr;
+    NaySample* lastPickedB = nullptr;
+    float mixAL = 1.f, mixAR = 1.f, mixBL = 1.f, mixBR = 1.f, pMaster = 1.f;      // last sample used (compared only, never dereferenced)
     int sentNote[128] {};                 // note actually played for each input key (0 = none, -1 = dropped, else note+1)
     std::atomic<int> learnTarget { -1 }, expCC { 11 }, doneCC { 0 }, doneTarget { -1 }, doneCount { 0 };
     std::atomic<int> ccMap[128];

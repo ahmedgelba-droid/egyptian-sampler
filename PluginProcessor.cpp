@@ -8,39 +8,18 @@ static const char* kAudioWildcard = "*.wav;*.aif;*.aiff;*.flac";
 
 static float dbToGainOrOff (float db) { return db <= -59.9f ? 0.0f : juce::Decibels::decibelsToGain (db); }
 
-// Maqam presets: cents offset per semitone degree above the root key (0 = root).
-static const int kNumMaqam = 6;
-static const float kMaqamCents[kNumMaqam][12] =
-{
-    { 0, 0, 0, 0,   0, 0, 0, 0, 0, 0, 0,   0 }, // 12-TET (none)
-    { 0, 0, 0, 0, -50, 0, 0, 0, 0, 0, 0, -50 }, // Rast   (root C: E and B half-flat)
-    { 0, 0, -50, 0, 0, 0, 0, 0, 0, 0, 0,   0 }, // Bayati (root D: E half-flat)
-    { -50, 0, 0, 0, 0, 0, 0, -50, 0, 0, 0, 0 }, // Sikah  (root E: E and B half-flat)
-    { -50, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,   0 }, // Huzam  (root E: E half-flat)
-    { 0, 0, -50, 0, 0, 0, 0, 0, 0, 0, 0,   0 }  // Saba   (root D: E half-flat)
-};
-
-juce::StringArray NayAudioProcessor::maqamNames()
-{
-    return { "EQUAL", "Rast", "Bayati", "Sikah", "Huzam", "Saba" };
-}
-
-float NayAudioProcessor::maqamOffset (int maqam, int pc, int root)
-{
-    return kMaqamCents[juce::jlimit (0, kNumMaqam - 1, maqam)][((pc - root) % 12 + 12) % 12];
-}
-
 const char* const NayAudioProcessor::paramIds[P_count] =
 {
     "gain", "attack", "release", "glide", "vibDepth", "vibRate", "mono", "legato",
     "delayTime", "delayFb", "delayLevel", "rvSize", "rvLevel",
-    "velSens", "pbRange", "maqam", "root",
+    "velSens", "pbRange",
     "satOn", "satDrive", "satMix",
     "wahOn", "wahPos", "wahRate", "wahMix",
     "phOn", "phRate", "phDepth", "phMix",
     "velOn",
     "arpOn", "arpMode", "arpRate", "arpOct", "arpGate", "arpHold",
-    "transpose", "octave"
+    "transpose", "octave",
+    "mainLevel", "mainPan", "mainMute", "duoLevel", "duoPan", "duoMute", "master"
 };
 
 //==============================================================================
@@ -72,10 +51,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout NayAudioProcessor::createLay
     l.add (std::make_unique<F> (id (P_velSens), "Velocity Sens", R (0.f, 1.f, 0.001f), 0.85f));
     l.add (std::make_unique<F> (id (P_pbRange), "Bend Range (st)", R (1.f, 24.f, 1.f), 2.f));
 
-    juce::StringArray notes;
-    for (auto* n : kNoteNames) notes.add (n);
-    l.add (std::make_unique<C> (id (P_maqam), "Maqam", maqamNames(), 0));
-    l.add (std::make_unique<C> (id (P_root),  "Root Key", notes, 0));
 
     l.add (std::make_unique<B> (id (P_satOn),    "KRONOS On", false));
     l.add (std::make_unique<F> (id (P_satDrive), "KRONOS Drive", R (0.f, 1.f, 0.001f), 0.6f));
@@ -99,6 +74,14 @@ juce::AudioProcessorValueTreeState::ParameterLayout NayAudioProcessor::createLay
     l.add (std::make_unique<B> (id (P_arpHold), "Arp Hold", false));
     l.add (std::make_unique<F> (id (P_transpose), "Transpose (st)", R (-12.f, 12.f, 1.f), 0.f));
     l.add (std::make_unique<F> (id (P_octave),    "Octave", R (-3.f, 3.f, 1.f), 0.f));
+
+    l.add (std::make_unique<F> (id (P_mainLevel), "Main Level (dB)", R (-60.f, 6.f, 0.1f), 0.f));
+    l.add (std::make_unique<F> (id (P_mainPan),   "Main Pan", R (-1.f, 1.f, 0.01f), 0.f));
+    l.add (std::make_unique<B> (id (P_mainMute),  "Main Mute", false));
+    l.add (std::make_unique<F> (id (P_duoLevel),  "Duo Level (dB)", R (-60.f, 6.f, 0.1f), 0.f));
+    l.add (std::make_unique<F> (id (P_duoPan),    "Duo Pan", R (-1.f, 1.f, 0.01f), 0.f));
+    l.add (std::make_unique<B> (id (P_duoMute),   "Duo Mute", false));
+    l.add (std::make_unique<F> (id (P_master),    "Master (dB)", R (-60.f, 6.f, 0.1f), 0.f));
 
     l.add (std::make_unique<B> (id (P_velOn),   "Velocity On", true));
 
@@ -124,6 +107,10 @@ NayAudioProcessor::NayAudioProcessor()
 
     for (int i = 0; i < 12; ++i)
         offRaw[i] = apvts.getRawParameterValue ("off" + juce::String (i));
+
+    // the factory library (if installed) is always available; the first instrument opens by default
+    if (libraryRoot().isDirectory() && scanFolder (libraryRoot()) > 0)
+        selectGroup (0);
 }
 
 bool NayAudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -279,34 +266,118 @@ std::shared_ptr<const NayBank> NayAudioProcessor::loadBank (const juce::File& fo
 }
 
 //==============================================================================
-void NayAudioProcessor::addGroup (const juce::String& name, const juce::String& path)
+void NayAudioProcessor::addGroup (const juce::String& name, const juce::String& path, const juce::String& category)
 {
     for (const auto& g : groups)
         if (g.path == path)
             return; // already added
 
-    groups.push_back ({ name, path, nullptr, {} });
+    NayGroup ng;
+    ng.name = name;
+    ng.path = path;
+    ng.category = category;
+    groups.push_back (std::move (ng));
+}
+
+// The library and the factory presets live WITH the plugin (no ProgramData / C: folders):
+//  1) inside the plugin bundle:   Egyptian Sampler.vst3\Contents\Resources\Library   and   ...\Factory Presets
+//  2) or next to the .vst3 file:  "Egyptian Sampler Data"\Library   and   ...\Factory Presets
+//  (Standalone: "Egyptian Sampler Data" next to the .exe)
+juce::File NayAudioProcessor::dataRoot()
+{
+    static const juce::File root = []() -> juce::File
+    {
+        const auto self = juce::File::getSpecialLocation (juce::File::currentApplicationFile);
+
+        juce::File bundle;
+        for (auto d = self; d != d.getParentDirectory(); d = d.getParentDirectory())
+            if (d.isDirectory() && d.getFileName().endsWithIgnoreCase (".vst3"))
+            {
+                bundle = d;
+                break;
+            }
+
+        std::vector<juce::File> cands;
+        if (bundle != juce::File())
+        {
+            cands.push_back (bundle.getChildFile ("Contents").getChildFile ("Resources"));
+            cands.push_back (bundle.getSiblingFile ("Egyptian Sampler Data"));
+        }
+        else
+        {
+            cands.push_back (self.getParentDirectory().getChildFile ("Egyptian Sampler Data"));
+            cands.push_back (self.getParentDirectory());
+        }
+
+        for (const auto& c : cands)
+            if (c.getChildFile ("Library").isDirectory() || c.getChildFile ("Factory Presets").isDirectory())
+                return c;
+
+        return cands.front();
+    }();
+
+    return root;
+}
+juce::File NayAudioProcessor::libraryRoot()       { return dataRoot().getChildFile ("Library"); }
+juce::File NayAudioProcessor::factoryPresetDir()  { return dataRoot().getChildFile ("Factory Presets"); }
+juce::File NayAudioProcessor::userPresetDir()
+{
+    return juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("Egyptian Sampler").getChildFile ("User Presets");
+}
+
+// Sample folders inside the library are stored relative ("@LIB/Stringed/Oud") so presets / projects work on any computer.
+juce::String NayAudioProcessor::toStoredPath (const juce::String& path)
+{
+    const auto lib = libraryRoot().getFullPathName();
+    const auto prefix = lib + juce::File::getSeparatorString();
+    if (lib.isNotEmpty() && path.startsWith (prefix))
+        return "@LIB/" + path.substring (prefix.length()).replace ("\\", "/");
+    return path;
+}
+
+juce::String NayAudioProcessor::fromStoredPath (const juce::String& stored)
+{
+    if (stored.startsWith ("@LIB/"))
+        return libraryRoot().getChildFile (stored.substring (5)).getFullPathName();
+    return stored;
+}
+
+// Finds instrument folders. Category = the folder that contains the instrument folders (e.g. "Stringed" > "Oud").
+int NayAudioProcessor::scanFolder (const juce::File& folder)
+{
+    const int before = (int) groups.size();
+    auto sortedDirs = [] (const juce::File& f)
+    {
+        auto d = f.findChildFiles (juce::File::findDirectories, false);
+        std::sort (d.begin(), d.end(), [] (const juce::File& a, const juce::File& b)
+                   { return a.getFileName().compareNatural (b.getFileName()) < 0; });
+        return d;
+    };
+
+    if (folderHasSamples (folder))
+    {
+        addGroup (folder.getFileName(), folder.getFullPathName(), "My Instruments");
+    }
+    else
+    {
+        for (const auto& s : sortedDirs (folder))
+        {
+            if (folderHasSamples (s))
+                addGroup (s.getFileName(), s.getFullPathName(), folder.getFileName());
+            else
+                for (const auto& s2 : sortedDirs (s))
+                    if (folderHasSamples (s2))
+                        addGroup (s2.getFileName(), s2.getFullPathName(), s.getFileName());
+        }
+    }
+
+    return (int) groups.size() - before;
 }
 
 int NayAudioProcessor::addFolder (const juce::File& folder)
 {
     const int firstNew = (int) groups.size();
-
-    if (folderHasSamples (folder))
-    {
-        addGroup (folder.getFileName(), folder.getFullPathName());
-    }
-    else
-    {
-        auto subs = folder.findChildFiles (juce::File::findDirectories, false);
-        std::sort (subs.begin(), subs.end(), [] (const juce::File& a, const juce::File& b)
-                   { return a.getFileName().compareNatural (b.getFileName()) < 0; });
-
-        for (const auto& s : subs)
-            if (folderHasSamples (s))
-                addGroup (s.getFileName(), s.getFullPathName());
-    }
-
+    scanFolder (folder);
     const int added = (int) groups.size() - firstNew;
 
     if (added > 0)
@@ -338,6 +409,23 @@ void NayAudioProcessor::selectGroup (int index)
     }
 
     sampleInfo = groups[(size_t) index].name + ": " + juce::String ((int) groups[(size_t) index].bank->size()) + " samples";
+}
+
+void NayAudioProcessor::selectDuo (int index)
+{
+    if (index < 0 || index >= (int) groups.size())
+    {
+        duoGroup = -1;
+        juce::SpinLock::ScopedLockType lock (bankLock);
+        bankB = nullptr;
+        return;
+    }
+
+    ensureLoaded (index);
+    duoGroup = index;
+
+    juce::SpinLock::ScopedLockType lock (bankLock);
+    bankB = groups[(size_t) index].bank;
 }
 
 void NayAudioProcessor::renameGroup (int index, const juce::String& newName)
@@ -389,7 +477,7 @@ double NayAudioProcessor::noteTarget (int note) const
 // key press picks a RANDOM sample among the neighbours of that sample (one or two roots above / below) in the
 // same instrument. The sample is pitch-shifted by the engine (rate = 2^((note - root)/12)), so the pressed key
 // always sounds at its own pitch - the maqam / quarter-tone tuning is not affected. Never the same sample twice.
-std::shared_ptr<NaySample> NayAudioProcessor::pickSample (const NayBank* b, int note, int vel)
+std::shared_ptr<NaySample> NayAudioProcessor::pickSample (const NayBank* b, int note, int vel, NaySample*& last)
 {
     if (b == nullptr)
         return nullptr;
@@ -416,7 +504,7 @@ std::shared_ptr<NaySample> NayAudioProcessor::pickSample (const NayBank* b, int 
     for (int dir = -1; dir <= 1; dir += 2)
     {
         int found = 0;
-        for (int r = bestRoot + dir; r >= 0 && r <= 127 && found < 2 && std::abs (r - bestRoot) <= 12; r += dir)
+        for (int r = bestRoot + dir; r >= 0 && r <= 127 && found < 2 && std::abs (r - bestRoot) <= 2; r += dir)   // neighbours within 2 semitones
             if (present[r]) { allowed[r] = true; ++found; }
     }
 
@@ -433,10 +521,10 @@ std::shared_ptr<NaySample> NayAudioProcessor::pickSample (const NayBank* b, int 
         return nullptr;
 
     int pick = rng.nextInt (n);
-    if (n > 1 && (*b)[(size_t) idx[pick]].get() == lastPicked)
+    if (n > 1 && (*b)[(size_t) idx[pick]].get() == last)
         pick = (pick + 1 + rng.nextInt (n - 1)) % n;     // never the same sample twice in a row
 
-    lastPicked = (*b)[(size_t) idx[pick]].get();
+    last = (*b)[(size_t) idx[pick]].get();
     return (*b)[(size_t) idx[pick]];
 }
 
@@ -448,16 +536,23 @@ void NayAudioProcessor::applyVelocity (NayVoice& v, int vel)
     v.velFc = 18000.f + (soft - 18000.f) * pVelSens;
 }
 
-void NayAudioProcessor::startVoice (NayVoice& v, int note, int vel, const std::shared_ptr<const NayBank>& a)
+void NayAudioProcessor::startVoice (NayVoice& v, int note, int vel,
+                                    const std::shared_ptr<const NayBank>& a,
+                                    const std::shared_ptr<const NayBank>& b)
 {
-    auto sa = pickSample (a.get(), note, vel);
-    if (sa == nullptr)
+    auto sa = pickSample (a.get(), note, vel, lastPicked);
+    std::shared_ptr<NaySample> sb;
+    if (b != nullptr)
+        sb = pickSample (b.get(), note, vel, lastPickedB);
+
+    if (sa == nullptr && sb == nullptr)
         return;
 
     v.sa = sa;
-    v.sb = nullptr;
+    v.sb = sb;
     v.posA = v.posB = 0.0;
     v.lp = 0.0f;
+    v.lpB = 0.0f;
     v.note = note;
     v.target = noteTarget (note);
     v.pitch = v.target;
@@ -479,7 +574,9 @@ void NayAudioProcessor::allNotesOff()
     }
 }
 
-void NayAudioProcessor::handleMidi (const juce::MidiMessage& msg, const std::shared_ptr<const NayBank>& a)
+void NayAudioProcessor::handleMidi (const juce::MidiMessage& msg,
+                                    const std::shared_ptr<const NayBank>& a,
+                                    const std::shared_ptr<const NayBank>& b)
 {
     if (msg.isNoteOn())
     {
@@ -494,7 +591,7 @@ void NayAudioProcessor::handleMidi (const juce::MidiMessage& msg, const std::sha
             held.push_back (n);
 
             auto& v = voices[0];
-            if (pLegato && wasHeld && v.adsr.isActive() && v.sa != nullptr)
+            if (pLegato && wasHeld && v.adsr.isActive() && (v.sa != nullptr || v.sb != nullptr))
             {
                 // legato: no retrigger, just glide
                 v.note = n;
@@ -504,7 +601,7 @@ void NayAudioProcessor::handleMidi (const juce::MidiMessage& msg, const std::sha
             }
             else
             {
-                startVoice (v, n, vel, a);
+                startVoice (v, n, vel, a, b);
             }
         }
         else
@@ -518,7 +615,7 @@ void NayAudioProcessor::handleMidi (const juce::MidiMessage& msg, const std::sha
                 if (v.age < oldest->age) oldest = &v;
             }
 
-            startVoice (freeVoice != nullptr ? *freeVoice : *oldest, n, vel, a);
+            startVoice (freeVoice != nullptr ? *freeVoice : *oldest, n, vel, a, b);
         }
     }
     else if (msg.isNoteOff())
@@ -544,7 +641,7 @@ void NayAudioProcessor::handleMidi (const juce::MidiMessage& msg, const std::sha
                 }
                 else
                 {
-                    startVoice (v, held.back(), juce::jmax (1, heldVel[held.back()]), a);
+                    startVoice (v, held.back(), juce::jmax (1, heldVel[held.back()]), a, b);
                 }
             }
         }
@@ -628,7 +725,7 @@ void NayAudioProcessor::renderVoice (NayVoice& v, juce::AudioBuffer<float>& buf,
 
         const double ratio = std::exp2 ((v.pitch + bendSemis + vib + (double) v.detune) / 12.0);
 
-        float mixed = 0.0f;
+        float mA = 0.0f, mB = 0.0f;
         for (int k = 0; k < 2; ++k)
         {
             if (! act[k])
@@ -640,17 +737,24 @@ void NayAudioProcessor::renderVoice (NayVoice& v, juce::AudioBuffer<float>& buf,
 
             const int i0 = (int) p;
             const float frac = (float) (p - (double) i0);
-            mixed += (src[k][i0] + frac * (src[k][i0 + 1] - src[k][i0])) * lg[k];
+            const float smp = (src[k][i0] + frac * (src[k][i0 + 1] - src[k][i0])) * lg[k];
+            if (k == 0) mA = smp; else mB = smp;
 
             p += ratio * rateBase[k];
         }
 
-        v.lp += lpA * (mixed - v.lp);
-        const float out = v.lp * v.adsr.getNextSample() * v.velGain * pGain * std::pow (es, 1.5f);
+        v.lp  += lpA * (mA - v.lp);
+        v.lpB += lpA * (mB - v.lpB);
+        const float env = v.adsr.getNextSample() * v.velGain * pGain * std::pow (es, 1.5f);
+        const float oa = v.lp * env, ob = v.lpB * env;
 
-        L[i] += out;
         if (R != nullptr)
-            R[i] += out;
+        {
+            L[i] += oa * mixAL + ob * mixBL;
+            R[i] += oa * mixAR + ob * mixBR;
+        }
+        else
+            L[i] += oa * 0.5f * (mixAL + mixAR) + ob * 0.5f * (mixBL + mixBR);
 
         if (! v.adsr.isActive())
             break;
@@ -1002,11 +1106,14 @@ void NayAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     juce::ScopedNoDenormals noDenormals;
     buffer.clear();
 
-    std::shared_ptr<const NayBank> a;
+    std::shared_ptr<const NayBank> a, b;
     {
         juce::SpinLock::ScopedTryLockType lock (bankLock);
         if (lock.isLocked())
+        {
             a = bankA;
+            b = bankB;
+        }
     }
 
     pGain      = getP (P_gain);
@@ -1028,11 +1135,25 @@ void NayAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     pArpOn = getP (P_arpOn) > 0.5f;  pArpMode = (int) getP (P_arpMode);  pArpRate = (int) getP (P_arpRate);
     pArpOct = (int) getP (P_arpOct); pArpGate = getP (P_arpGate);        pArpHold = getP (P_arpHold) > 0.5f;
 
-    // fine-tune per note + maqam preset (transposed by the root key)
-    const int mq = juce::jlimit (0, kNumMaqam - 1, (int) getP (P_maqam));
-    const int rt = juce::jlimit (0, 11, (int) getP (P_root));
+    // fine-tune per note (the microtonal keys)
     for (int i = 0; i < 12; ++i)
-        off[i] = offRaw[i]->load() + kMaqamCents[mq][(i - rt + 12) % 12];
+        off[i] = offRaw[i]->load();
+
+    // mixer: main / duo level, pan and mute (center = unity gain), master level
+    {
+        auto panGains = [] (float pan, float& gl, float& gr)
+        {
+            const float ang = (pan + 1.0f) * 0.25f * juce::MathConstants<float>::pi;
+            gl = std::cos (ang) * 1.41421356f;
+            gr = std::sin (ang) * 1.41421356f;
+        };
+        const float gA = getP (P_mainMute) > 0.5f ? 0.0f : dbToGainOrOff (getP (P_mainLevel));
+        const float gB = getP (P_duoMute)  > 0.5f ? 0.0f : dbToGainOrOff (getP (P_duoLevel));
+        float l, r;
+        panGains (getP (P_mainPan), l, r);  mixAL = gA * l;  mixAR = gA * r;
+        panGains (getP (P_duoPan),  l, r);  mixBL = gB * l;  mixBR = gB * r;
+        pMaster = dbToGainOrOff (getP (P_master));
+    }
 
     if (pMono != lastMono)
     {
@@ -1064,7 +1185,17 @@ void NayAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
             const int lt = learnTarget.load();
             if (lt != -1)
             {
-                if (lt == -2) expCC = a; else ccMap[a] = lt;
+                if (lt == -2)
+                {
+                    expCC = a;
+                    ccMap[a] = -1;
+                }
+                else
+                {
+                    if (expCC.load() == a) expCC = -1;                                  // the pedal forgets its old job
+                    for (auto& m : ccMap) if (m.load() == lt) m = -1;                   // one CC per control
+                    ccMap[a] = lt;
+                }
                 doneCC = a; doneTarget = lt; ++doneCount;
                 learnTarget = -1;
             }
@@ -1141,7 +1272,7 @@ void NayAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
         renderAll (buffer, pos, p - pos);
         pos = p;
         curPos = clockPos + p;
-        handleMidi (metadata.getMessage(), a);
+        handleMidi (metadata.getMessage(), a, b);
     }
 
     renderAll (buffer, pos, total - pos);
@@ -1152,6 +1283,7 @@ void NayAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     processPhaser (buffer);
     processDelay (buffer);
     processReverb (buffer);
+    buffer.applyGain (pMaster);
 }
 
 //==============================================================================
@@ -1160,7 +1292,7 @@ juce::AudioProcessorEditor* NayAudioProcessor::createEditor()
     return new NayAudioProcessorEditor (*this);
 }
 
-void NayAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
+juce::ValueTree NayAudioProcessor::buildState()
 {
     syncZones();
     auto state = apvts.copyState();
@@ -1169,13 +1301,17 @@ void NayAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
     if (old.isValid())
         state.removeChild (old, nullptr);
 
+    state.setProperty ("presetName", currentPreset, nullptr);
+
     juce::ValueTree gs ("GROUPS");
     gs.setProperty ("active", activeGroup, nullptr);
+    gs.setProperty ("duo", duoGroup, nullptr);
     for (const auto& g : groups)
     {
         juce::ValueTree c ("GROUP");
         c.setProperty ("name", g.name, nullptr);
-        c.setProperty ("path", g.path, nullptr);
+        c.setProperty ("path", toStoredPath (g.path), nullptr);
+        c.setProperty ("category", g.category, nullptr);
         for (const auto& z : g.zones)
         {
             juce::ValueTree zt ("ZONE");
@@ -1205,7 +1341,73 @@ void NayAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
             mm.appendChild (t, nullptr);
         }
     state.appendChild (mm, nullptr);
+    return state;
+}
 
+void NayAudioProcessor::applyState (const juce::ValueTree& st)
+{
+    apvts.replaceState (st);
+    currentPreset = st.getProperty ("presetName").toString();
+
+    auto mmap = st.getChildWithName ("MIDIMAP");
+    if (mmap.isValid())
+    {
+        for (auto& m : ccMap) m = -1;
+        expCC = (int) mmap.getProperty ("expCC", 11);
+        for (int i = 0; i < mmap.getNumChildren(); ++i)
+        {
+            auto t = mmap.getChild (i);
+            const auto id = t.getProperty ("param").toString();
+            const int cc = (int) t.getProperty ("cc", -1);
+            for (int k = 0; k < P_count; ++k)
+                if (id == paramIds[k] && cc >= 0 && cc < 128)
+                    ccMap[cc] = k;
+        }
+    }
+
+    auto gs = st.getChildWithName ("GROUPS");
+    if (gs.isValid())
+    {
+        groups.clear();
+        activeGroup = -1;
+        duoGroup = -1;
+        {
+            juce::SpinLock::ScopedLockType lock (bankLock);
+            bankA = nullptr;
+            bankB = nullptr;
+        }
+
+        for (int i = 0; i < gs.getNumChildren(); ++i)
+        {
+            auto c = gs.getChild (i);
+            NayGroup g;
+            g.name = c.getProperty ("name").toString();
+            g.path = fromStoredPath (c.getProperty ("path").toString());
+            g.category = c.getProperty ("category").toString();
+
+            for (int k = 0; k < c.getNumChildren(); ++k)
+            {
+                auto zt = c.getChild (k);
+                g.zones.push_back ({ zt.getProperty ("file").toString(), (int) zt.getProperty ("root", 60),
+                                     (int) zt.getProperty ("lo", 0), (int) zt.getProperty ("hi", 127),
+                                     (int) zt.getProperty ("vlo", 1), (int) zt.getProperty ("vhi", 127) });
+            }
+            groups.push_back (std::move (g));
+        }
+
+        const int a = (int) gs.getProperty ("active", -1);
+        if (a >= 0 && a < (int) groups.size())
+            selectGroup (a);
+
+        const int d = (int) gs.getProperty ("duo", -1);
+        if (d >= 0 && d < (int) groups.size())
+            selectDuo (d);
+    }
+}
+
+void NayAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
+{
+    auto state = buildState();
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
@@ -1213,55 +1415,59 @@ void NayAudioProcessor::getStateInformation (juce::MemoryBlock& destData)
 void NayAudioProcessor::setStateInformation (const void* data, int size)
 {
     if (auto xml = getXmlFromBinary (data, size))
-    {
         if (xml->hasTagName (apvts.state.getType()))
-        {
-            auto st = juce::ValueTree::fromXml (*xml);
-            apvts.replaceState (st);
+            applyState (juce::ValueTree::fromXml (*xml));
+}
 
-            auto mmap = st.getChildWithName ("MIDIMAP");
-            if (mmap.isValid())
-            {
-                for (auto& m : ccMap) m = -1;
-                expCC = (int) mmap.getProperty ("expCC", 11);
-                for (int i = 0; i < mmap.getNumChildren(); ++i)
-                {
-                    auto t = mmap.getChild (i);
-                    const auto id = t.getProperty ("param").toString();
-                    const int cc = (int) t.getProperty ("cc", -1);
-                    for (int k = 0; k < P_count; ++k)
-                        if (id == paramIds[k] && cc >= 0 && cc < 128)
-                            ccMap[cc] = k;
-                }
-            }
+//==============================================================================
+// Presets: one file (.esp = xml) holds EVERYTHING: instruments + sample folders, mapping, all knobs, keys tuning,
+// effects, arp, mixer, MIDI map. "Factory Presets" ship with the plugin; "User Presets" are the user's own.
+bool NayAudioProcessor::savePreset (const juce::String& name)
+{
+    const auto clean = juce::File::createLegalFileName (name.trim());
+    if (clean.isEmpty())
+        return false;
 
-            auto gs = st.getChildWithName ("GROUPS");
-            if (gs.isValid())
-            {
-                groups.clear();
-                activeGroup = -1;
+    userPresetDir().createDirectory();
+    currentPreset = clean;
+    auto state = buildState();
+    auto xml = state.createXml();
+    return xml != nullptr && userPresetDir().getChildFile (clean + ".esp").replaceWithText (xml->toString());
+}
 
-                for (int i = 0; i < gs.getNumChildren(); ++i)
-                {
-                    auto c = gs.getChild (i);
-                    NayGroup g { c.getProperty ("name").toString(), c.getProperty ("path").toString(), nullptr, {} };
+bool NayAudioProcessor::loadPreset (const juce::File& file)
+{
+    auto xml = juce::XmlDocument::parse (file);
+    if (xml == nullptr || ! xml->hasTagName (apvts.state.getType()))
+        return false;
 
-                    for (int k = 0; k < c.getNumChildren(); ++k)
-                    {
-                        auto zt = c.getChild (k);
-                        g.zones.push_back ({ zt.getProperty ("file").toString(), (int) zt.getProperty ("root", 60),
-                                             (int) zt.getProperty ("lo", 0), (int) zt.getProperty ("hi", 127),
-                                             (int) zt.getProperty ("vlo", 1), (int) zt.getProperty ("vhi", 127) });
-                    }
-                    groups.push_back (std::move (g));
-                }
+    applyState (juce::ValueTree::fromXml (*xml));
+    currentPreset = file.getFileNameWithoutExtension();
+    return true;
+}
 
-                const int a = (int) gs.getProperty ("active", -1);
-                if (a >= 0 && a < (int) groups.size())
-                    selectGroup (a);
-            }
-        }
-    }
+juce::Array<juce::File> NayAudioProcessor::listPresets (bool factory)
+{
+    auto files = (factory ? factoryPresetDir() : userPresetDir()).findChildFiles (juce::File::findFiles, true, "*.esp");
+    juce::Array<juce::File> out;
+    for (const auto& f : files)
+        out.add (f);
+    std::sort (out.begin(), out.end(), [] (const juce::File& a, const juce::File& b)
+               { return a.getFileName().compareNatural (b.getFileName()) < 0; });
+    return out;
+}
+
+bool NayAudioProcessor::deletePreset (const juce::File& file)
+{
+    return file.existsAsFile() && file.moveToTrash();
+}
+
+bool NayAudioProcessor::renamePreset (const juce::File& file, const juce::String& newName)
+{
+    const auto clean = juce::File::createLegalFileName (newName.trim());
+    if (clean.isEmpty() || ! file.existsAsFile())
+        return false;
+    return file.moveFileTo (file.getSiblingFile (clean + ".esp"));
 }
 
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()

@@ -140,6 +140,21 @@ void NeonLookAndFeel::drawComboBox (juce::Graphics& g, int w, int h, bool, int, 
 }
 
 //==============================================================================
+void LambdaListModel::paintListBoxItem (int row, juce::Graphics& g, int w, int hgt, bool selected)
+{
+    if (selected)
+    {
+        g.setColour (neon::amber.withAlpha (0.28f));
+        g.fillRect (0, 0, w, hgt);
+        g.setColour (neon::amber);
+        g.fillRect (0, 0, 3, hgt);
+    }
+    g.setColour (selected ? neon::text : neon::dim.brighter (0.2f));
+    g.setFont (uiFont (14.0f, selected));
+    g.drawText (getText ? getText (row) : juce::String(), 14, 0, w - 18, hgt, juce::Justification::centredLeft, true);
+}
+
+//==============================================================================
 MapView::MapView (NayAudioProcessor& p) : proc (p)
 {
     resetBtn.setColour (juce::TextButton::buttonColourId, neon::amber);
@@ -271,8 +286,6 @@ void MapView::paint (juce::Graphics& g)
     g.drawText ("MAPPING  //  key range x velocity range", 14, 14, 420, 28, juce::Justification::centredLeft, false);
 
     // keyboard strip (keys altered by the chosen maqam / fine tune light up)
-    const int mqSel = (int) proc.apvts.getRawParameterValue ("maqam")->load();
-    const int rtSel = (int) proc.apvts.getRawParameterValue ("root")->load();
     for (int k = 0; k < 128; ++k)
     {
         const int pc = k % 12;
@@ -280,7 +293,7 @@ void MapView::paint (juce::Graphics& g)
         g.setColour (black ? juce::Colour (0xff101826) : neon::text.withAlpha (0.82f));
         g.fillRect (keyToX (k), (float) keyStrip.getY(), keyW() + 0.5f, (float) keyStrip.getHeight());
         {
-            const float o = proc.apvts.getRawParameterValue ("off" + juce::String (pc))->load() + NayAudioProcessor::maqamOffset (mqSel, pc, rtSel);
+            const float o = proc.apvts.getRawParameterValue ("off" + juce::String (pc))->load();
             if (std::abs (o) > 0.5f)
             {
                 g.setColour ((o < 0 ? neon::magenta : neon::amber).withAlpha (0.9f));
@@ -475,8 +488,7 @@ NoteKey::NoteKey (NayAudioProcessor& p, int n) : proc (p), pc (n)
 
 float NoteKey::maq() const
 {
-    return NayAudioProcessor::maqamOffset ((int) proc.apvts.getRawParameterValue ("maqam")->load(), pc,
-                                           (int) proc.apvts.getRawParameterValue ("root")->load());
+    return 0.0f;   // no preset maqams any more: the keys are tuned by hand
 }
 
 float NoteKey::user() const { return par->convertFrom0to1 (par->getValue()); }
@@ -570,6 +582,8 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     setLookAndFeel (&laf);
     addAndMakeVisible (page);
     addChildComponent (settings);
+    addChildComponent (browse);
+    addChildComponent (mixer);
     settings.addAndMakeVisible (mapView);
 
     const auto tq = neon::cyan, cr = neon::magenta, gd = neon::amber, pp = neon::green, lp = neon::violet;
@@ -585,32 +599,10 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     tMono   = addToggle (page, P_mono,   "MONO",   tq);
     tLegato = addToggle (page, P_legato, "LEGATO", tq);
 
-    // ---- maqam ----
-    addCombo (page, maqamBox, P_maqam, maqamAtt);
-    addCombo (page, rootBox, P_root, rootAtt);
-    maqamBox.setColour (juce::ComboBox::outlineColourId, gd);
-    rootBox.setColour (juce::ComboBox::outlineColourId, gd);
-    rootBox.setVisible (false);
-    maqamBox.onChange = [this]     // choosing EQUAL wipes the whole maqam board (the root key stays)
-    {
-        if (maqamBox.getSelectedItemIndex() != 0)
-            return;
-        for (int i = 0; i < 12; ++i)
-            if (auto* q = proc.apvts.getParameter ("off" + juce::String (i)))
-            {
-                q->beginChangeGesture();
-                q->setValueNotifyingHost (q->convertTo0to1 (0.0f));
-                q->endChangeGesture();
-            }
-    };
-    for (auto* b : { &minusBtn, &plusBtn, &cancelBtn })
-    {
-        b->setColour (juce::TextButton::buttonColourId, b == &cancelBtn ? neon::magenta : neon::amber);
-        page.addAndMakeVisible (*b);
-    }
-    minusBtn.onClick = [this] { stepRoot (-1); };
-    plusBtn.onClick  = [this] { stepRoot (1); };
-    cancelBtn.onClick = [this]
+    // ---- microtonal keys: reset + transpose / octave beside them ----
+    resetKeysBtn.setColour (juce::TextButton::buttonColourId, neon::magenta);
+    page.addAndMakeVisible (resetKeysBtn);
+    resetKeysBtn.onClick = [this]
     {
         for (int i = 0; i < 12; ++i)
             if (auto* q = proc.apvts.getParameter ("off" + juce::String (i)))
@@ -619,12 +611,6 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
                 q->setValueNotifyingHost (q->convertTo0to1 (0.0f));
                 q->endChangeGesture();
             }
-        if (auto* q = proc.apvts.getParameter ("maqam"))
-        {
-            q->beginChangeGesture();
-            q->setValueNotifyingHost (q->convertTo0to1 (0.0f));
-            q->endChangeGesture();
-        }
     };
     for (int i = 0; i < 12; ++i)
     {
@@ -677,9 +663,12 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     juce::Path left, right;
     left.addTriangle (0.f, 0.5f, 1.f, 0.f, 1.f, 1.f);
     right.addTriangle (1.f, 0.5f, 0.f, 0.f, 0.f, 1.f);
-    for (auto* b : { &prevA, &prevA2 })  b->setShape (left, false, true, false);
-    for (auto* b : { &nextA, &nextA2 })  b->setShape (right, false, true, false);
+    for (auto* b : { &prevA, &prevA2, &prevD })  b->setShape (left, false, true, false);
+    for (auto* b : { &nextA, &nextA2, &nextD })  b->setShape (right, false, true, false);
     page.addAndMakeVisible (prevA);   page.addAndMakeVisible (nextA);
+    page.addAndMakeVisible (prevD);   page.addAndMakeVisible (nextD);
+    prevD.onClick = [this] { stepDuo (-1); };
+    nextD.onClick = [this] { stepDuo (1); };
     settings.addAndMakeVisible (prevA2); settings.addAndMakeVisible (nextA2);
 
     prevA.onClick = prevA2.onClick = [this] { stepGroup (-1); };
@@ -735,14 +724,171 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
                             true);
     };
 
-    mapButton.setClickingTogglesState (true);
-    mapButton.onClick = [this]
+    // ---- top buttons: BROWSE / MIXER / SETTINGS (click the active one again to go back) ----
+    browseButton.setColour (juce::TextButton::buttonColourId, tq);
+    mixerButton.setColour (juce::TextButton::buttonColourId, lp);
+    addAndMakeVisible (browseButton);
+    addAndMakeVisible (mixerButton);
+    mapButton.onClick    = [this] { showView (view == 3 ? 0 : 3); };
+    browseButton.onClick = [this] { showView (view == 1 ? 0 : 1); };
+    mixerButton.onClick  = [this] { showView (view == 2 ? 0 : 2); };
+
+    // ---- mixer page ----
+    kMainLvl = addKnob (mixer, P_mainLevel, "LEVEL", 1, "dB", tq);
+    kMainPan = addKnob (mixer, P_mainPan,   "PAN",   2, "",   tq);
+    tMainMute = addToggle (mixer, P_mainMute, "MUTE", cr);
+    kDuoLvl  = addKnob (mixer, P_duoLevel, "LEVEL", 1, "dB", gd);
+    kDuoPan  = addKnob (mixer, P_duoPan,   "PAN",   2, "",   gd);
+    tDuoMute = addToggle (mixer, P_duoMute, "MUTE", cr);
+    kMaster  = addKnob (mixer, P_master, "MASTER LEVEL", 1, "dB", pp);
+
+    // ---- browse page ----
+    searchBox.setTextToShowWhenEmpty ("search by name...", neon::dim);
+    searchBox.setColour (juce::TextEditor::backgroundColourId, juce::Colour (0xff070c16));
+    searchBox.setColour (juce::TextEditor::textColourId, neon::text);
+    searchBox.setColour (juce::TextEditor::outlineColourId, neon::amber.withAlpha (0.6f));
+    searchBox.setFont (uiFont (14.0f, false));
+    searchBox.onTextChange = [this] { rebuildShown(); };
+    browse.addAndMakeVisible (searchBox);
+
+    catModel.getCount = [this] { return (int) cats.size(); };
+    catModel.getText  = [this] (int r) { return r >= 0 && r < (int) cats.size() ? cats[(size_t) r].second : juce::String(); };
+    catModel.onSelect = [this] (int r) { selCat = r; rebuildShown(); };
+    instModel.getCount = [this] { return (int) shown.size(); };
+    instModel.getText = [this] (int r)
     {
-        const bool on = mapButton.getToggleState();
-        page.setVisible (! on);
-        settings.setVisible (on);
-        mapButton.setButtonText (on ? "BACK" : "SETTINGS");
-        mapView.refresh();
+        if (r < 0 || r >= (int) shown.size()) return juce::String();
+        const auto& e = shown[(size_t) r];
+        juce::String t = e.name;
+        if (e.group >= 0 && e.group == proc.getActiveGroup()) t = "* " + t;
+        else if (e.group >= 0 && e.group == proc.getDuoGroup()) t = "+ " + t;
+        return t;
+    };
+    instModel.onSelect = [this] (int) { updateBrowseButtons(); };
+
+    for (auto* lb : { &catList, &instList })
+    {
+        lb->setRowHeight (30);
+        lb->setColour (juce::ListBox::backgroundColourId, juce::Colour (0xff070c16));
+        lb->setColour (juce::ListBox::outlineColourId, neon::amber.withAlpha (0.6f));
+        lb->setOutlineThickness (1);
+        browse.addAndMakeVisible (*lb);
+    }
+    catList.setModel (&catModel);
+    instList.setModel (&instModel);
+
+    auto loadSelected = [this]
+    {
+        const int r = instList.getSelectedRow();
+        if (r < 0 || r >= (int) shown.size())
+            return;
+        const auto e = shown[(size_t) r];
+        if (e.group >= 0)
+            proc.selectGroup (e.group);
+        else if (e.preset.existsAsFile())
+            proc.loadPreset (e.preset);
+        refreshGroups();
+        rebuildBrowse();
+    };
+    loadBtn.onClick = loadSelected;
+    instModel.onDouble = [loadSelected] (int) { loadSelected(); };
+
+    duoBtn.onClick = [this]
+    {
+        const int r = instList.getSelectedRow();
+        if (r >= 0 && r < (int) shown.size() && shown[(size_t) r].group >= 0)
+        {
+            proc.selectDuo (shown[(size_t) r].group);
+            refreshGroups();
+            rebuildShown();
+        }
+    };
+    noDuoBtn.onClick = [this] { proc.selectDuo (-1); refreshGroups(); rebuildShown(); };
+
+    saveBtn.onClick = [this]
+    {
+        promptName ("Save preset", proc.getPresetName().isEmpty() ? juce::String ("My Preset") : proc.getPresetName(),
+                    [this] (juce::String n)
+                    {
+                        if (proc.savePreset (n))
+                            rebuildBrowse ((int) cats.size() - 1);
+                    });
+    };
+    renPresetBtn.onClick = [this]
+    {
+        const int r = instList.getSelectedRow();
+        if (r < 0 || r >= (int) shown.size() || ! shown[(size_t) r].user)
+            return;
+        const auto f = shown[(size_t) r].preset;
+        promptName ("Rename preset", f.getFileNameWithoutExtension(), [this, f] (juce::String n)
+                    {
+                        NayAudioProcessor::renamePreset (f, n);
+                        rebuildBrowse ((int) cats.size() - 1);
+                    });
+    };
+    delPresetBtn.onClick = [this]
+    {
+        const int r = instList.getSelectedRow();
+        if (r < 0 || r >= (int) shown.size() || ! shown[(size_t) r].user)
+            return;
+        const auto f = shown[(size_t) r].preset;
+
+        auto* w = new juce::AlertWindow ("Delete preset", "Delete  \"" + f.getFileNameWithoutExtension() + "\" ?", juce::MessageBoxIconType::NoIcon);
+        w->addButton ("Delete", 1, juce::KeyPress (juce::KeyPress::returnKey));
+        w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+        juce::Component::SafePointer<NayAudioProcessorEditor> safe (this);
+        w->enterModalState (true, juce::ModalCallbackFunction::create ([safe, f] (int result)
+                            {
+                                if (result == 1 && safe != nullptr)
+                                {
+                                    NayAudioProcessor::deletePreset (f);
+                                    safe->rebuildBrowse ((int) safe->cats.size() - 1);
+                                }
+                            }), true);
+    };
+
+    loadBtn.setColour (juce::TextButton::buttonColourId, tq);
+    duoBtn.setColour (juce::TextButton::buttonColourId, gd);
+    noDuoBtn.setColour (juce::TextButton::buttonColourId, gd.darker (0.3f));
+    saveBtn.setColour (juce::TextButton::buttonColourId, pp);
+    renPresetBtn.setColour (juce::TextButton::buttonColourId, lp);
+    delPresetBtn.setColour (juce::TextButton::buttonColourId, cr);
+    for (auto* b : { &loadBtn, &duoBtn, &noDuoBtn, &saveBtn, &renPresetBtn, &delPresetBtn })
+        browse.addAndMakeVisible (*b);
+
+    browseInfo.setColour (juce::Label::textColourId, neon::dim);
+    browseInfo.setFont (uiFont (11.5f, false));
+    browseInfo.setJustificationType (juce::Justification::topLeft);
+    browse.addAndMakeVisible (browseInfo);
+
+    browse.onPaint = [this] (juce::Graphics& g)
+    {
+        g.drawImageAt (bgImage, -browse.getX(), -browse.getY());
+        g.setColour (neon::amber);
+        g.setFont (uiFont (11.0f));
+        g.drawText ("CATEGORIES", 0, 38 - 16, 300, 14, juce::Justification::centredLeft, false);
+        g.drawText ("INSTRUMENTS  /  PRESETS", 312, 38 - 16, 430, 14, juce::Justification::centredLeft, false);
+        g.drawText ("PRESETS", 754, 176, 214, 14, juce::Justification::centredLeft, false);
+        g.setColour (neon::dim);
+        g.setFont (uiFont (10.5f, false));
+        g.drawText ("* = main    + = duo    (double-click = load)", 312, 566, 430, 14, juce::Justification::centredLeft, false);
+    };
+
+    mixer.onPaint = [this] (juce::Graphics& g)
+    {
+        g.drawImageAt (bgImage, -mixer.getX(), -mixer.getY());
+        drawPanel (g, pMixMain, "MAIN", neon::cyan);
+        drawPanel (g, pMixDuo, "DUO", neon::amber);
+        drawPanel (g, pMixMaster, "MASTER", neon::green);
+
+        const int a = proc.getActiveGroup(), d = proc.getDuoGroup();
+        g.setFont (uiFont (13.0f));
+        g.setColour (neon::text);
+        g.drawText (a >= 0 ? proc.getGroupName (a) : juce::String ("NO INSTRUMENT"), pMixMain.getX() + 10, pMixMain.getY() + 28, pMixMain.getWidth() - 20, 18, juce::Justification::centred, true);
+        g.drawText (d >= 0 ? proc.getGroupName (d) : juce::String ("OFF  (choose one in BROWSE)"), pMixDuo.getX() + 10, pMixDuo.getY() + 28, pMixDuo.getWidth() - 20, 18, juce::Justification::centred, true);
+        g.setColour (neon::dim);
+        g.setFont (uiFont (10.5f, false));
+        g.drawText ("Pan: center = unity gain.  Right-click any knob = MIDI learn.", 0, 330, 968, 14, juce::Justification::centredLeft, false);
     };
 
     info.setColour (juce::Label::textColourId, neon::dim);
@@ -759,12 +905,17 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
         auto bank = proc.getBankOf (a);
         drawLcd (g, lcdA, "INSTRUMENT", a >= 0 ? proc.getGroupName (a) : "NO INSTRUMENT",
                  a >= 0 ? juce::String (bank != nullptr ? (int) bank->size() : 0) + " samples"
-                        : "open SETTINGS > ADD FOLDER", neon::cyan);
-
-        const int rt = (int) proc.apvts.getRawParameterValue ("root")->load();
+                        : "open BROWSE or SETTINGS > ADD FOLDER", neon::cyan);
+        {
+            const int d = proc.getDuoGroup();
+            auto dbank = proc.getBankOf (d);
+            drawLcd (g, lcdD, "DUO  //  2nd INSTRUMENT", d >= 0 ? proc.getGroupName (d) : "OFF",
+                     d >= 0 ? juce::String (dbank != nullptr ? (int) dbank->size() : 0) + " samples"
+                            : "BROWSE > ADD AS DUO", neon::amber);
+        }
 
         drawPanel (g, pVoice, "VOICE", neon::cyan);
-        drawPanel (g, pMaqam, "MAQAM  //  MICROTONAL KEYS", neon::amber);
+        drawPanel (g, pMaqam, "MICROTONAL KEYS", neon::amber);
         drawPanel (g, pSat, "KRONOS", neon::amber);
         drawPanel (g, pWah, "WAH", neon::green);
         drawPanel (g, pPh, "PHASER", neon::violet);
@@ -778,30 +929,15 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
         g.drawText ("MOD", pWheels.getX() + 36, pWheels.getY() + 24, 36, 10, juce::Justification::centred, false);
         g.drawText ("EXP", pWheels.getX() + 68, pWheels.getY() + 24, 36, 10, juce::Justification::centred, false);
         g.drawText ("BEND RANGE", pWheels.getX() + 106, pWheels.getY() + 24, 92, 10, juce::Justification::centred, false);
-        g.drawText ("TRANSPOSE (st)", pWheels.getX() + 202, pWheels.getY() + 24, 92, 10, juce::Justification::centred, false);
-        g.drawText ("OCTAVE", pWheels.getX() + 298, pWheels.getY() + 24, 92, 10, juce::Justification::centred, false);
         g.setFont (uiFont (10.5f));
         g.setColour (neon::dim);
         g.drawText ("PATTERN", pArp.getX() + 128, pArp.getY() + 24, 100, 12, juce::Justification::centredLeft, false);
         g.drawText ("RATE (BPM)", pArp.getX() + 276, pArp.getY() + 24, 100, 12, juce::Justification::centredLeft, false);
 
-        g.setFont (uiFont (10.5f));
-        g.setColour (neon::amber);
-        g.drawText ("MAQAM", pMaqam.getX() + 14, pMaqam.getY() + 24, 100, 14, juce::Justification::centredLeft, false);
-        {
-            auto d = pMaqam.getX() + 14;
-            juce::Rectangle<float> dr ((float) d, (float) pMaqam.getY() + 66.0f, 96.0f, 76.0f);
-            g.setColour (juce::Colour (0xff070c16));
-            g.fillRoundedRectangle (dr, 8.0f);
-            g.setColour (juce::Colour (0xffff3b2f).withAlpha (0.8f));
-            g.drawRoundedRectangle (dr, 8.0f, 1.2f);
-            g.setColour (neon::dim);
-            g.setFont (uiFont (9.0f));
-            g.drawText ("ROOT KEY", dr.toNearestInt().removeFromTop (16), juce::Justification::centred, false);
-            g.setColour (juce::Colour (0xffff3b2f));
-            g.setFont (juce::Font (juce::FontOptions ("Consolas", 44.0f, juce::Font::bold)));
-            g.drawText (kNames[rt], dr.toNearestInt().withTrimmedTop (14), juce::Justification::centred, false);
-        }
+        g.setFont (uiFont (9.5f));
+        g.setColour (neon::dim);
+        g.drawText ("TRANSPOSE (semitones)", pMaqam.getX() + 14, pMaqam.getY() + 28, 112, 12, juce::Justification::centred, false);
+        g.drawText ("OCTAVE", pMaqam.getX() + 130, pMaqam.getY() + 28, 108, 12, juce::Justification::centred, false);
         g.setColour (neon::dim);
         g.setFont (uiFont (10.5f, false));
         g.drawText ("Altered notes light up red.  Click = quarter-tone on/off.  Drag = fine tune.",
@@ -1003,17 +1139,6 @@ void NayAudioProcessorEditor::timerCallback()
     }
 }
 
-void NayAudioProcessorEditor::stepRoot (int d)
-{
-    if (auto* q = proc.apvts.getParameter ("root"))
-    {
-        const int cur = (int) proc.apvts.getRawParameterValue ("root")->load();
-        q->beginChangeGesture();
-        q->setValueNotifyingHost (q->convertTo0to1 ((float) ((cur + d + 12) % 12)));
-        q->endChangeGesture();
-    }
-}
-
 void NayAudioProcessorEditor::stepGroup (int delta)
 {
     const int n = proc.getNumGroups();
@@ -1044,12 +1169,157 @@ void NayAudioProcessorEditor::setupStepBox (juce::Slider& s, std::unique_ptr<juc
     page.addAndMakeVisible (s);
 }
 
+void NayAudioProcessorEditor::stepDuo (int delta)
+{
+    const int n = proc.getNumGroups();
+    if (n <= 0)
+        return;
+
+    int next = proc.getDuoGroup() + delta;   // -1 = off
+    if (next >= n)  next = -1;
+    if (next < -1)  next = n - 1;
+
+    proc.selectDuo (next);
+    refreshGroups();
+}
+
+void NayAudioProcessorEditor::showView (int v)
+{
+    view = v;
+    page.setVisible (v == 0);
+    browse.setVisible (v == 1);
+    mixer.setVisible (v == 2);
+    settings.setVisible (v == 3);
+    browseButton.setToggleState (v == 1, juce::dontSendNotification);
+    mixerButton.setToggleState (v == 2, juce::dontSendNotification);
+    mapButton.setToggleState (v == 3, juce::dontSendNotification);
+    mapButton.setButtonText (v == 3 ? "BACK" : "SETTINGS");
+    browseButton.setButtonText (v == 1 ? "BACK" : "BROWSE");
+    mixerButton.setButtonText (v == 2 ? "BACK" : "MIXER");
+
+    if (v == 1) rebuildBrowse();
+    if (v == 3) mapView.refresh();
+}
+
+void NayAudioProcessorEditor::promptName (const juce::String& title, const juce::String& initial, std::function<void (juce::String)> cb)
+{
+    auto* w = new juce::AlertWindow (title, "Enter a name:", juce::MessageBoxIconType::NoIcon);
+    w->addTextEditor ("name", initial);
+    w->addButton ("OK", 1, juce::KeyPress (juce::KeyPress::returnKey));
+    w->addButton ("Cancel", 0, juce::KeyPress (juce::KeyPress::escapeKey));
+
+    juce::Component::SafePointer<NayAudioProcessorEditor> safe (this);
+    w->enterModalState (true, juce::ModalCallbackFunction::create ([safe, w, cb] (int result)
+                        {
+                            if (result == 1 && safe != nullptr)
+                                cb (w->getTextEditorContents ("name"));
+                        }), true);
+}
+
+void NayAudioProcessorEditor::rebuildBrowse (int forceCat)
+{
+    cats.clear();
+    cats.push_back ({ 0, "ALL INSTRUMENTS" });
+    for (int i = 0; i < proc.getNumGroups(); ++i)
+    {
+        auto cat = proc.getGroupCategory (i);
+        if (cat.isEmpty())
+            cat = "Instruments";
+        bool have = false;
+        for (const auto& c0 : cats)
+            if (c0.first == 1 && c0.second == cat)
+                have = true;
+        if (! have)
+            cats.push_back ({ 1, cat });
+    }
+    cats.push_back ({ 2, "FACTORY PRESETS" });
+    cats.push_back ({ 3, "USER PRESETS" });
+
+    if (forceCat >= 0)
+        selCat = forceCat;
+    selCat = juce::jlimit (0, (int) cats.size() - 1, selCat);
+
+    catList.updateContent();
+    catList.selectRow (selCat, true, true);
+    rebuildShown();
+}
+
+void NayAudioProcessorEditor::rebuildShown()
+{
+    shown.clear();
+    const auto q = searchBox.getText().trim();
+
+    if (selCat >= 0 && selCat < (int) cats.size())
+    {
+        const int kind = cats[(size_t) selCat].first;
+        const auto cname = cats[(size_t) selCat].second;
+
+        if (kind <= 1)
+        {
+            for (int i = 0; i < proc.getNumGroups(); ++i)
+            {
+                auto cat = proc.getGroupCategory (i);
+                if (cat.isEmpty())
+                    cat = "Instruments";
+                const auto nm = proc.getGroupName (i);
+                const bool inCat = kind == 0 || q.isNotEmpty() || cat == cname;
+                if (inCat && (q.isEmpty() || nm.containsIgnoreCase (q)))
+                {
+                    BrowseEntry e;
+                    e.name = nm;
+                    e.group = i;
+                    shown.push_back (e);
+                }
+            }
+        }
+        else
+        {
+            for (const auto& f : NayAudioProcessor::listPresets (kind == 2))
+            {
+                const auto nm = f.getFileNameWithoutExtension();
+                if (q.isEmpty() || nm.containsIgnoreCase (q))
+                {
+                    BrowseEntry e;
+                    e.name = nm;
+                    e.preset = f;
+                    e.user = kind == 3;
+                    shown.push_back (e);
+                }
+            }
+        }
+    }
+
+    instList.updateContent();
+    instList.deselectAllRows();
+    instList.repaint();
+    updateBrowseButtons();
+}
+
+void NayAudioProcessorEditor::updateBrowseButtons()
+{
+    const int r = instList.getSelectedRow();
+    const bool ok = r >= 0 && r < (int) shown.size();
+    loadBtn.setEnabled (ok);
+    duoBtn.setEnabled (ok && shown[(size_t) r].group >= 0);
+    renPresetBtn.setEnabled (ok && shown[(size_t) r].user);
+    delPresetBtn.setEnabled (ok && shown[(size_t) r].user);
+
+    const int a = proc.getActiveGroup(), d = proc.getDuoGroup();
+    browseInfo.setText ("Main: " + (a >= 0 ? proc.getGroupName (a) : juce::String ("none"))
+                        + "     Duo: " + (d >= 0 ? proc.getGroupName (d) : juce::String ("off"))
+                        + "     Preset: " + (proc.getPresetName().isEmpty() ? juce::String ("-") : proc.getPresetName())
+                        + "\nLibrary folder:  " + NayAudioProcessor::libraryRoot().getFullPathName()
+                        + "\nUser presets:  " + NayAudioProcessor::userPresetDir().getFullPathName(),
+                        juce::dontSendNotification);
+}
+
 void NayAudioProcessorEditor::refreshGroups()
 {
     info.setText (proc.getSampleInfo(), juce::dontSendNotification);
     mapView.refresh();
     page.repaint();
     settings.repaint();
+    mixer.repaint();
 }
 
 //==============================================================================
@@ -1227,8 +1497,11 @@ void NayAudioProcessorEditor::rebuildBackground()
 void NayAudioProcessorEditor::drawPanel (juce::Graphics& g, juce::Rectangle<int> ri, const juce::String& title, juce::Colour accent)
 {
     auto r = ri.toFloat();
-    g.setColour (neon::panel.withAlpha (0.88f));
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff1b2c4d).withAlpha (0.92f), 0.0f, r.getY(),
+                                             juce::Colour (0xff0a1222).withAlpha (0.95f), 0.0f, r.getBottom(), false));
     g.fillRoundedRectangle (r, 8.0f);
+    g.setColour (juce::Colours::white.withAlpha (0.05f));
+    g.drawRoundedRectangle (r.reduced (2.5f), 6.0f, 1.0f);
     g.setColour (juce::Colour (0xffb8863a).withAlpha (0.75f));
     g.drawRoundedRectangle (r.reduced (0.5f), 8.0f, 1.5f);
 
@@ -1347,9 +1620,9 @@ void NayAudioProcessorEditor::paint (juce::Graphics& g)
     g.setColour (neon::cyan);
     g.drawText ("MAQAM ENGINE  //  MICROTONAL SAMPLER", 94, 42, 520, 14, juce::Justification::centredLeft, false);
 
-    g.setFont (juce::Font (juce::FontOptions ("Segoe UI", 26.0f, juce::Font::bold)));
+    g.setFont (juce::Font (juce::FontOptions ("Segoe UI", 22.0f, juce::Font::bold)));
     g.setColour (neon::amber);
-    g.drawText (juce::String (L"سامبلر مصري"), 590, 10, 260, 40, juce::Justification::centredRight, false);
+    g.drawText (juce::String (L"سامبلر مصري"), 370, 12, 260, 36, juce::Justification::centredRight, false);
 }
 
 void NayAudioProcessorEditor::resized()
@@ -1360,15 +1633,22 @@ void NayAudioProcessorEditor::resized()
     rebuildBackground();
 
     mapButton.setBounds (872, 16, 142, 32);
+    browseButton.setBounds (640, 16, 110, 32);
+    mixerButton.setBounds (756, 16, 110, 32);
     midiRect = { 46, 674, 968, 24 };
     pageRect = { 46, 76, 968, 592 };
     page.setBounds (pageRect);
     settings.setBounds (pageRect);
+    browse.setBounds (pageRect);
+    mixer.setBounds (pageRect);
 
     // ================= main page (local coords) =================
-    lcdA = { 0, 0, 968, 60 };      // instrument name: top of the page, full width
+    lcdA = { 0, 0, 478, 60 };      // instrument name (left) + DUO screen (right), top of the page
+    lcdD = { 490, 0, 478, 60 };
     prevA.setBounds (lcdA.getX() + 8, lcdA.getCentreY() - 14, 20, 28);
     nextA.setBounds (lcdA.getRight() - 28, lcdA.getCentreY() - 14, 20, 28);
+    prevD.setBounds (lcdD.getX() + 8, lcdD.getCentreY() - 14, 20, 28);
+    nextD.setBounds (lcdD.getRight() - 28, lcdD.getCentreY() - 14, 20, 28);
 
     pVoice = { 0, 68, 968, 128 };
     layoutRow ({ 10, pVoice.getY() + 22, 600, 100 }, { kGain, kAtk, kRel, kVibD, kVibR, kGlide });
@@ -1377,10 +1657,9 @@ void NayAudioProcessorEditor::resized()
     tVel->setBounds (748, pVoice.getY() + 74, 150, 24);
 
     pMaqam = { 0, 204, 968, 150 };
-    maqamBox.setBounds (14, pMaqam.getY() + 34, 226, 26);
-    minusBtn.setBounds (118, pMaqam.getY() + 66, 58, 34);
-    plusBtn.setBounds (182, pMaqam.getY() + 66, 58, 34);
-    cancelBtn.setBounds (118, pMaqam.getY() + 106, 122, 36);
+    trBox.setBounds (pMaqam.getX() + 14, pMaqam.getY() + 46, 108, 34);
+    ocBox.setBounds (pMaqam.getX() + 130, pMaqam.getY() + 46, 108, 34);
+    resetKeysBtn.setBounds (pMaqam.getX() + 14, pMaqam.getY() + 100, 224, 36);
     static const float px[12] = { 0, 0.5f, 1, 1.5f, 2, 3, 3.5f, 4, 4.5f, 5, 5.5f, 6 };
     for (int i = 0; i < 12; ++i)
     {
@@ -1431,11 +1710,31 @@ void NayAudioProcessorEditor::resized()
     modWheelView.setBounds (pWheels.getX() + 40, pWheels.getY() + 36, 28, 50);
     expWheel.setBounds (pWheels.getX() + 72, pWheels.getY() + 36, 28, 50);
     pbBox.setBounds (pWheels.getX() + 108, pWheels.getY() + 40, 88, 34);
-    trBox.setBounds (pWheels.getX() + 204, pWheels.getY() + 40, 88, 34);
-    ocBox.setBounds (pWheels.getX() + 300, pWheels.getY() + 40, 88, 34);
     tArp->setBounds (12, pArp.getY() + 28, 110, 26);
     tArpHold->setBounds (12, pArp.getY() + 58, 110, 26);
     arpModeBox.setBounds (128, pArp.getY() + 38, 140, 28);
     arpRateBox.setBounds (276, pArp.getY() + 38, 100, 28);
     layoutRow ({ 384, pArp.getY() + 20, 168, 66 }, { kArpOct, kArpGate });
+
+    // ================= browse page =================
+    searchBox.setBounds (0, 0, 300, 24);
+    catList.setBounds (0, 38, 300, 520);
+    instList.setBounds (312, 38, 430, 520);
+    loadBtn.setBounds (754, 38, 214, 34);
+    duoBtn.setBounds (754, 78, 214, 34);
+    noDuoBtn.setBounds (754, 118, 214, 30);
+    saveBtn.setBounds (754, 196, 214, 34);
+    renPresetBtn.setBounds (754, 236, 214, 30);
+    delPresetBtn.setBounds (754, 272, 214, 30);
+    browseInfo.setBounds (754, 330, 214, 228);
+
+    // ================= mixer page =================
+    pMixMain   = { 0, 0, 300, 316 };
+    pMixDuo    = { 310, 0, 300, 316 };
+    pMixMaster = { 620, 0, 348, 316 };
+    layoutRow ({ pMixMain.getX() + 8, 56, 284, 190 }, { kMainLvl, kMainPan });
+    layoutRow ({ pMixDuo.getX() + 8, 56, 284, 190 }, { kDuoLvl, kDuoPan });
+    layoutRow ({ pMixMaster.getX() + 8, 56, 332, 190 }, { kMaster });
+    tMainMute->setBounds (pMixMain.getX() + 20, 266, 120, 26);
+    tDuoMute->setBounds (pMixDuo.getX() + 20, 266, 120, 26);
 }
