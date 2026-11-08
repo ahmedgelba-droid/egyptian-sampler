@@ -54,7 +54,7 @@ enum NayParam
     P_velOn,
     P_arpOn, P_arpMode, P_arpRate, P_arpOct, P_arpGate, P_arpHold,
     P_transpose, P_octave,
-    P_mainLevel, P_mainPan, P_mainMute, P_duoLevel, P_duoPan, P_duoMute, P_master, P_varOn,
+    P_mainLevel, P_mainPan, P_mainMute, P_duoLevel, P_duoPan, P_duoMute, P_master, P_varOn, P_satTone, P_satBass,
     P_count
 };
 
