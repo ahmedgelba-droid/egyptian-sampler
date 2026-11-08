@@ -53,8 +53,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout NayAudioProcessor::createLay
 
 
     l.add (std::make_unique<B> (id (P_satOn),    "KRONOS On", false));
-    l.add (std::make_unique<F> (id (P_satDrive), "KRONOS Drive", R (0.f, 1.f, 0.001f), 0.6f));
-    l.add (std::make_unique<F> (id (P_satMix),   "KRONOS Amount", R (0.f, 1.f, 0.001f), 0.6f));
+    l.add (std::make_unique<F> (id (P_satDrive), "KRONOS Drive", R (0.f, 1.f, 0.001f), 0.75f));
+    l.add (std::make_unique<F> (id (P_satMix),   "KRONOS Amount", R (0.f, 1.f, 0.001f), 1.0f));
 
     l.add (std::make_unique<B> (id (P_wahOn),   "Wah On", false));
     l.add (std::make_unique<F> (id (P_wahPos),  "Wah Pedal", R (0.f, 1.f, 0.001f), 0.5f));
@@ -831,12 +831,14 @@ void NayAudioProcessor::processSaturation (juce::AudioBuffer<float>& buffer)
     const float bias = 0.06f * drive;
     const float tb = std::tanh (bias);
     const float aHp   = 1.0f - std::exp (-twoPi * 90.0f / fs);
-    const float aTop  = 1.0f - std::exp (-twoPi * juce::jmin (11000.0f, 0.45f * fs) / fs);
+    const float aTop  = 1.0f - std::exp (-twoPi * juce::jmin (6500.0f, 0.45f * fs) / fs);   // guitar cabinet roll-off
+    const float aBass = 1.0f - std::exp (-twoPi * 200.0f / fs);
     const float aAtt  = 1.0f - std::exp (-1.0f / (0.004f * fs));
     const float aRel  = 1.0f - std::exp (-1.0f / (0.18f * fs));
     const float aEnv  = 1.0f - std::exp (-1.0f / (0.05f * fs));
     const float aGain = 1.0f - std::exp (-1.0f / (0.02f * fs));
-    const float sus = 0.5f * drive;
+    const float sus = 0.8f * drive;
+    const float aShine = 1.0f - std::exp (-twoPi * 2500.0f / fs);
 
     const float splitHz[3] = { 250.0f, 1400.0f, 4500.0f };
     float ac[3];
@@ -848,7 +850,7 @@ void NayAudioProcessor::processSaturation (juce::AudioBuffer<float>& buffer)
     float kb[4], norm[4];
     for (int b = 0; b < 4; ++b)
     {
-        kb[b] = 1.0f + drive * 9.0f * mult[b];
+        kb[b] = 1.0f + drive * 26.0f * mult[b];
         norm[b] = tone[b] / std::pow (kb[b], 0.7f);
     }
 
@@ -887,9 +889,16 @@ void NayAudioProcessor::processSaturation (juce::AudioBuffer<float>& buffer)
             for (int b = 0; b < 4; ++b)
                 y += (std::tanh (kb[b] * band[b] + bias) - tb) * norm[b];
             y *= 1.6f;
+            satLo[ch] += aShine * (y - satLo[ch]);
+            y += (y - satLo[ch]) * (0.45f * drive);       // lead shine above 2.5 kHz
 
-            satLp[ch] += aTop * (y - satLp[ch]);             // smooth the very top
-            y = satLp[ch];
+            satHi[ch] += aBass * (y - satHi[ch]);            // amp BASS: warm low end
+            y += satHi[ch] * (0.30f * drive);
+
+            satLp[ch] += aTop * (y - satLp[ch]);             // cabinet: 2-pole roll-off at 6.5 kHz
+            satLp2[ch] += aTop * (satLp[ch] - satLp2[ch]);
+            y = satLp2[ch] * 1.3f;
+            y = std::tanh (1.4f * y) * 0.75f;                // power-amp stage: gentle extra compression and glue
 
             const float hp = y - satDcX[ch] + 0.995f * satDcY[ch];
             satDcX[ch] = y;
