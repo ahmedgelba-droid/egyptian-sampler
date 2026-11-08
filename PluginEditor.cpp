@@ -598,6 +598,7 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     tVel   = addToggle (page, P_velOn, "VELOCITY", gd);
     tMono   = addToggle (page, P_mono,   "MONO",   tq);
     tLegato = addToggle (page, P_legato, "LEGATO", tq);
+    tVar = addToggle (page, P_varOn, "NOTE VARIATION  (random neighbour sample)", pp);
 
     // ---- microtonal keys: reset + transpose / octave beside them ----
     resetKeysBtn.setColour (juce::TextButton::buttonColourId, neon::magenta);
@@ -619,25 +620,25 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     }
 
     // ---- effects ----
-    tSat = addToggle (page, P_satOn, "ACTIVE", gd);
-    kSatDrive = addKnob (page, P_satDrive, "DRIVE",  2, "", gd);
-    kSatMix   = addKnob (page, P_satMix,   "AMOUNT", 2, "", gd);
+    tSat = addToggle (mixer, P_satOn, "ACTIVE", gd);
+    kSatDrive = addKnob (mixer, P_satDrive, "DRIVE",  2, "", gd);
+    kSatMix   = addKnob (mixer, P_satMix,   "AMOUNT", 2, "", gd);
 
 
-    tWah = addToggle (page, P_wahOn, "ACTIVE", pp);
-    kWahPos = addKnob (page, P_wahPos, "PEDAL",  2, "", pp);
-    kWahMix = addKnob (page, P_wahMix, "AMOUNT", 2, "", pp);
+    tWah = addToggle (mixer, P_wahOn, "ACTIVE", pp);
+    kWahPos = addKnob (mixer, P_wahPos, "PEDAL",  2, "", pp);
+    kWahMix = addKnob (mixer, P_wahMix, "AMOUNT", 2, "", pp);
 
-    tPh = addToggle (page, P_phOn, "ACTIVE", lp);
-    kPhRate  = addKnob (page, P_phRate,  "RATE",   2, "Hz", lp);
-    kPhDepth = addKnob (page, P_phDepth, "DEPTH",  2, "", lp);
-    kPhMix   = addKnob (page, P_phMix,   "AMOUNT", 2, "", lp);
+    tPh = addToggle (mixer, P_phOn, "ACTIVE", lp);
+    kPhRate  = addKnob (mixer, P_phRate,  "RATE",   2, "Hz", lp);
+    kPhDepth = addKnob (mixer, P_phDepth, "DEPTH",  2, "", lp);
+    kPhMix   = addKnob (mixer, P_phMix,   "AMOUNT", 2, "", lp);
 
-    kDlTime = addKnob (page, P_delayTime,  "TIME",     0, "ms", tq);
-    kDlFb   = addKnob (page, P_delayFb,    "FEEDBACK", 2, "", tq);
-    kDlLvl  = addKnob (page, P_delayLevel, "LEVEL",    1, "dB", tq);
-    kRvSize = addKnob (page, P_rvSize,     "SIZE",     2, "", cr);
-    kRvLvl  = addKnob (page, P_rvLevel,    "LEVEL",    1, "dB", cr);
+    kDlTime = addKnob (mixer, P_delayTime,  "TIME",     0, "ms", tq);
+    kDlFb   = addKnob (mixer, P_delayFb,    "FEEDBACK", 2, "", tq);
+    kDlLvl  = addKnob (mixer, P_delayLevel, "LEVEL",    1, "dB", tq);
+    kRvSize = addKnob (mixer, P_rvSize,     "SIZE",     2, "", cr);
+    kRvLvl  = addKnob (mixer, P_rvLevel,    "LEVEL",    1, "dB", cr);
 
     // ---- arpeggiator ----
     tArp = addToggle (page, P_arpOn, "ARP ON", gd);
@@ -880,6 +881,11 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
         drawPanel (g, pMixMain, "MAIN", neon::cyan);
         drawPanel (g, pMixDuo, "DUO", neon::amber);
         drawPanel (g, pMixMaster, "MASTER", neon::green);
+        drawPanel (g, pSat, "KRONOS", neon::amber);
+        drawPanel (g, pWah, "WAH", neon::green);
+        drawPanel (g, pPh, "PHASER", neon::violet);
+        drawPanel (g, pDelay, "DELAY", neon::cyan);
+        drawPanel (g, pReverb, "REVERB", neon::magenta);
 
         const int a = proc.getActiveGroup(), d = proc.getDuoGroup();
         g.setFont (uiFont (13.0f));
@@ -888,13 +894,19 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
         g.drawText (d >= 0 ? proc.getGroupName (d) : juce::String ("OFF  (choose one in BROWSE)"), pMixDuo.getX() + 10, pMixDuo.getY() + 28, pMixDuo.getWidth() - 20, 18, juce::Justification::centred, true);
         g.setColour (neon::dim);
         g.setFont (uiFont (10.5f, false));
-        g.drawText ("Pan: center = unity gain.  Right-click any knob = MIDI learn.", 0, 330, 968, 14, juce::Justification::centredLeft, false);
+        g.drawText ("Pan: center = unity gain.  Right-click any knob = MIDI learn.", 0, 474, 968, 14, juce::Justification::centredLeft, false);
     };
 
     info.setColour (juce::Label::textColourId, neon::dim);
     info.setFont (uiFont (11.0f, false));
     info.setJustificationType (juce::Justification::topLeft);
     settings.addAndMakeVisible (info);
+
+    page.onMouse = [this] (const juce::MouseEvent& e)
+    {
+        if (lcdA.contains (e.getPosition())) showVoiceMenu (false);
+        else if (lcdD.contains (e.getPosition())) showVoiceMenu (true);
+    };
 
     // ---------------- main page painting ----------------
     page.onPaint = [this] (juce::Graphics& g)
@@ -916,13 +928,14 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
 
         drawPanel (g, pVoice, "VOICE", neon::cyan);
         drawPanel (g, pMaqam, "MICROTONAL KEYS", neon::amber);
-        drawPanel (g, pSat, "KRONOS", neon::amber);
-        drawPanel (g, pWah, "WAH", neon::green);
-        drawPanel (g, pPh, "PHASER", neon::violet);
-        drawPanel (g, pDelay, "DELAY", neon::cyan);
-        drawPanel (g, pReverb, "REVERB", neon::magenta);
+        drawPanel (g, pPerf, "PLAYING", neon::green);
         drawPanel (g, pArp, "ARPEGGIATOR", neon::amber);
         drawPanel (g, pWheels, "WHEELS", neon::cyan);
+        g.setFont (uiFont (11.0f, false));
+        g.setColour (neon::dim);
+        g.drawText ("Tip: click the INSTRUMENT or DUO screen to open the voice list.", pPerf.getX() + 14, pPerf.getY() + 60, 600, 16, juce::Justification::centredLeft, false);
+        g.drawText ("Note variation ON = every key press may use a neighbouring sample (within 2 semitones), pitch-corrected.", pPerf.getX() + 14, pPerf.getY() + 82, 800, 16, juce::Justification::centredLeft, false);
+        g.drawText ("TRANSPOSE moves the quarter-tone key tuning with it (like an arranger keyboard).", pPerf.getX() + 14, pPerf.getY() + 104, 800, 16, juce::Justification::centredLeft, false);
         g.setFont (uiFont (9.0f));
         g.setColour (neon::dim);
         g.drawText ("PITCH", pWheels.getX() + 4, pWheels.getY() + 24, 36, 10, juce::Justification::centred, false);
@@ -1181,6 +1194,47 @@ void NayAudioProcessorEditor::stepDuo (int delta)
 
     proc.selectDuo (next);
     refreshGroups();
+}
+
+void NayAudioProcessorEditor::showVoiceMenu (bool duo)
+{
+    const int n = proc.getNumGroups();
+    juce::PopupMenu m;
+    m.addSectionHeader (duo ? "DUO  -  2nd instrument" : "MAIN  -  instrument");
+    if (duo)
+        m.addItem (1000, "OFF  (no duo)", true, proc.getDuoGroup() < 0);
+
+    juce::StringArray cats;
+    for (int i = 0; i < n; ++i)
+        if (! cats.contains (proc.getGroupCategory (i)))
+            cats.add (proc.getGroupCategory (i));
+
+    const int cur = duo ? proc.getDuoGroup() : proc.getActiveGroup();
+    for (const auto& cat : cats)
+    {
+        m.addSeparator();
+        m.addSectionHeader (cat.isEmpty() ? juce::String ("OTHER") : cat);
+        for (int i = 0; i < n; ++i)
+            if (proc.getGroupCategory (i) == cat)
+                m.addItem (i + 1, proc.getGroupName (i), true, i == cur);
+    }
+
+    if (n == 0)
+        m.addItem (2000, "no instruments yet - open BROWSE or SETTINGS", false);
+
+    auto target = juce::Rectangle<int> ((duo ? lcdD : lcdA).getX(), (duo ? lcdD : lcdA).getY(), (duo ? lcdD : lcdA).getWidth(), (duo ? lcdD : lcdA).getHeight());
+    target = page.localAreaToGlobal (target);
+
+    juce::Component::SafePointer<NayAudioProcessorEditor> safe (this);
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetScreenArea (target).withMinimumWidth (target.getWidth()).withMaximumNumColumns (3),
+                     [safe, duo] (int r)
+                     {
+                         if (safe == nullptr || r == 0)
+                             return;
+                         if (duo) safe->proc.selectDuo (r == 1000 ? -1 : r - 1);
+                         else     safe->proc.selectGroup (r - 1);
+                         safe->refreshGroups();
+                     });
 }
 
 void NayAudioProcessorEditor::showView (int v)
@@ -1671,7 +1725,7 @@ void NayAudioProcessorEditor::resized()
     int sum = 0;
     for (int c : counts) sum += c * 72 + 14;
     const int gap = (968 - sum) / 4;
-    const int fy = 362, fh = 132;
+    const int fy = 326, fh = 132;
 
     juce::Rectangle<int>* fx[5] = { &pSat, &pWah, &pPh, &pDelay, &pReverb };
     int x = 0;
@@ -1704,6 +1758,8 @@ void NayAudioProcessorEditor::resized()
 
     mapView.setBounds (0, 68, 968, 524);
 
+    pPerf = { 0, 362, 968, 132 };
+    tVar->setBounds (14, pPerf.getY() + 26, 420, 24);
     pArp = { 0, 502, 560, 90 };           // smaller
     pWheels = { 568, 502, 400, 90 };      // bigger: wheels + bend range + transpose + octave
     pitchWheel.setBounds (pWheels.getX() + 8, pWheels.getY() + 36, 28, 50);

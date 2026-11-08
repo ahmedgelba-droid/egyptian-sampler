@@ -144,7 +144,9 @@ private:
     struct Page : public juce::Component
     {
         std::function<void (juce::Graphics&)> onPaint;
+        std::function<void (const juce::MouseEvent&)> onMouse;
         void paint (juce::Graphics& g) override { if (onPaint) onPaint (g); }
+        void mouseDown (const juce::MouseEvent& e) override { if (onMouse) onMouse (e); }
     };
 
     void timerCallback() override;
@@ -165,6 +167,7 @@ private:
     void refreshGroups();
     void stepGroup (int delta);
     void stepDuo (int delta);
+    void showVoiceMenu (bool duo);
     void showView (int v);                       // 0 main, 1 browse, 2 mixer, 3 settings
     void rebuildBrowse (int forceCat = -1);
     void rebuildShown();
@@ -202,7 +205,7 @@ private:
 
     std::vector<std::unique_ptr<juce::ToggleButton>> toggles;
     std::vector<std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>> toggleAtts;
-    juce::ToggleButton *tMono {}, *tLegato {}, *tVel {}, *tArp {}, *tArpHold {}, *tSat {}, *tWah {}, *tPh {};
+    juce::ToggleButton *tMono {}, *tLegato {}, *tVel {}, *tArp {}, *tArpHold {}, *tSat {}, *tWah {}, *tPh {}, *tVar {};
 
     juce::ComboBox arpModeBox, arpRateBox;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> arpModeAtt, arpRateAtt;
@@ -236,7 +239,7 @@ private:
 
     juce::Image bgImage;
     juce::Rectangle<int> pageRect, lcdA, lcdD, lcdA2;
-    juce::Rectangle<int> pVoice, pMaqam, pSat, pWah, pPh, pDelay, pReverb, pArp;
+    juce::Rectangle<int> pVoice, pMaqam, pSat, pWah, pPh, pDelay, pReverb, pArp, pPerf;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (NayAudioProcessorEditor)
 };

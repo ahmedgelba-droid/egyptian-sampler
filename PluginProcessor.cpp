@@ -19,7 +19,7 @@ const char* const NayAudioProcessor::paramIds[P_count] =
     "velOn",
     "arpOn", "arpMode", "arpRate", "arpOct", "arpGate", "arpHold",
     "transpose", "octave",
-    "mainLevel", "mainPan", "mainMute", "duoLevel", "duoPan", "duoMute", "master"
+    "mainLevel", "mainPan", "mainMute", "duoLevel", "duoPan", "duoMute", "master", "varOn"
 };
 
 //==============================================================================
@@ -84,6 +84,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout NayAudioProcessor::createLay
     l.add (std::make_unique<F> (id (P_master),    "Master (dB)", R (-60.f, 6.f, 0.1f), 0.f));
 
     l.add (std::make_unique<B> (id (P_velOn),   "Velocity On", true));
+    l.add (std::make_unique<B> (id (P_varOn),   "Note Variation", true));
 
 
     for (int i = 0; i < 12; ++i)
@@ -469,7 +470,7 @@ void NayAudioProcessor::syncZones()
 //==============================================================================
 double NayAudioProcessor::noteTarget (int note) const
 {
-    return (double) note + (double) off[note % 12] * 0.01;
+    return (double) note + (double) off[((note - curShift) % 12 + 12) % 12] * 0.01;
 }
 
 // Zone lookup + background sample variation.
@@ -519,6 +520,12 @@ std::shared_ptr<NaySample> NayAudioProcessor::pickSample (const NayBank* b, int 
 
     if (n == 0)
         return nullptr;
+
+    if (getP (P_varOn) < 0.5f)
+    {
+        last = (*b)[(size_t) idx[0]].get();
+        return (*b)[(size_t) idx[0]];
+    }
 
     int pick = rng.nextInt (n);
     if (n > 1 && (*b)[(size_t) idx[pick]].get() == last)
@@ -784,18 +791,25 @@ void NayAudioProcessor::processSaturation (juce::AudioBuffer<float>& buffer)
     if (! pSatOn)
         return;
 
+    // KRONOS = "electric violin lead" voicing for ANY source (even a plain sine): a leveller adds sustain, a soft
+    // tanh stage adds smooth harmonics, a presence band (1.8-4.2 kHz) gives the shine, a little low warmth is kept,
+    // and the output is level-matched so the instrument never gets louder.
     const float drive = pSatDrive, mix = pSatMix;
     const float fs = (float) sr;
     const float twoPi = juce::MathConstants<float>::twoPi;
-    const float k = 1.0f + drive * 9.0f;           // soft curve (no hard clipping)
-    const float bias = 0.08f * drive;               // tiny asymmetry = even harmonics, smooth and warm
+    const float k = 1.0f + drive * 6.0f;
+    const float bias = 0.06f * drive;
     const float tb = std::tanh (bias);
-    const float aMid  = 1.0f - std::exp (-twoPi * 1500.0f / fs);
+    const float aHp   = 1.0f - std::exp (-twoPi * 140.0f / fs);
     const float aLow  = 1.0f - std::exp (-twoPi * 220.0f / fs);
-    const float aTop  = 1.0f - std::exp (-twoPi * juce::jmin (11000.0f, 0.45f * fs) / fs);
-    const float aSpk  = 1.0f - std::exp (-twoPi * 3500.0f / fs);
+    const float aB1   = 1.0f - std::exp (-twoPi * 1800.0f / fs);
+    const float aB2   = 1.0f - std::exp (-twoPi * juce::jmin (4200.0f, 0.4f * fs) / fs);
+    const float aTop  = 1.0f - std::exp (-twoPi * juce::jmin (9500.0f, 0.45f * fs) / fs);
+    const float aAtt  = 1.0f - std::exp (-1.0f / (0.004f * fs));
+    const float aRel  = 1.0f - std::exp (-1.0f / (0.18f * fs));
     const float aEnv  = 1.0f - std::exp (-1.0f / (0.05f * fs));
     const float aGain = 1.0f - std::exp (-1.0f / (0.02f * fs));
+    const float sus = 0.55f * drive;
 
     auto shape = [=] (float x) { return std::tanh (k * x + bias) - tb; };
 
@@ -810,27 +824,30 @@ void NayAudioProcessor::processSaturation (juce::AudioBuffer<float>& buffer)
         {
             const float xd = d[i];
 
-            satHi[ch] += aMid * (xd - satHi[ch]);   // low-passed at 1.5 kHz
-            satLo[ch] += aLow * (xd - satLo[ch]);   // low-passed at 220 Hz
-            // pre-shaper: a little warmth from the lows, and lift the mids / highs (shine) instead of rolling them off
-            const float x = xd + satLo[ch] * (0.35f * drive) + (xd - satHi[ch]) * (0.5f * drive);
+            satHpS[ch] += aHp * (xd - satHpS[ch]);
+            float x = xd - satHpS[ch];                       // no mud going into the drive
+
+            const float ax = std::abs (x);
+            satLev[ch] += (ax > satLev[ch] ? aAtt : aRel) * (ax - satLev[ch]);
+            x *= juce::jlimit (1.0f, 8.0f, std::pow (0.2f / (satLev[ch] + 1.0e-4f), sus));   // sustain
 
             const float xm = 0.5f * (satXPrev[ch] + x);
             satXPrev[ch] = x;
-
             float y = 0.5f * (shape (xm) + shape (x));
 
-            satLp[ch] += aTop * (y - satLp[ch]);    // only removes fizz above 11 kHz
+            satLo[ch] += aLow * (y - satLo[ch]);
+            satHi[ch] += aB1 * (y - satHi[ch]);
+            satLp2[ch] += aB2 * (y - satLp2[ch]);
+            y += satLo[ch] * (0.25f * drive);                // warmth
+            y += (satLp2[ch] - satHi[ch]) * (0.7f * drive);  // presence / shine
+
+            satLp[ch] += aTop * (y - satLp[ch]);             // smooth the very top
             y = satLp[ch];
 
-            satLp2[ch] += aSpk * (y - satLp2[ch]);
-            y += (y - satLp2[ch]) * (0.25f * drive); // sparkle
-
-            const float hp = y - satDcX[ch] + 0.995f * satDcY[ch]; // DC blocker
+            const float hp = y - satDcX[ch] + 0.995f * satDcY[ch];
             satDcX[ch] = y;
             satDcY[ch] = hp;
 
-            // level match: keep the loudness of the wet signal equal to the loudness of the input
             satEnvIn[ch]  += aEnv * (xd * xd - satEnvIn[ch]);
             satEnvOut[ch] += aEnv * (hp * hp - satEnvOut[ch]);
             if (satEnvIn[ch] > 1.0e-8f)
@@ -1217,6 +1234,7 @@ void NayAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     // TRANSPOSE (semitones) + OCTAVE (12 semitones): shifts the notes that get played. The note-off always
     // uses the same shifted note as its note-on, so changing the shift while holding keys never sticks a note.
     const int shiftSt = (int) std::lround (getP (P_transpose)) + 12 * (int) std::lround (getP (P_octave));
+    curShift = ((shiftSt % 12) + 12) % 12;
     juce::MidiBuffer shifted;
     for (const auto metadata : midi)
     {

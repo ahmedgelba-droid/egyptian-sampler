@@ -53,7 +53,7 @@ enum NayParam
     P_velOn,
     P_arpOn, P_arpMode, P_arpRate, P_arpOct, P_arpGate, P_arpHold,
     P_transpose, P_octave,
-    P_mainLevel, P_mainPan, P_mainMute, P_duoLevel, P_duoPan, P_duoMute, P_master,
+    P_mainLevel, P_mainPan, P_mainMute, P_duoLevel, P_duoPan, P_duoMute, P_master, P_varOn,
     P_count
 };
 
@@ -226,13 +226,14 @@ private:
     NaySample* lastPicked = nullptr;
     NaySample* lastPickedB = nullptr;
     float mixAL = 1.f, mixAR = 1.f, mixBL = 1.f, mixBR = 1.f, pMaster = 1.f;      // last sample used (compared only, never dereferenced)
+    int curShift = 0;                     // transpose+octave (mod 12): the microtonal key tuning moves with it
     int sentNote[128] {};                 // note actually played for each input key (0 = none, -1 = dropped, else note+1)
     std::atomic<int> learnTarget { -1 }, expCC { 11 }, doneCC { 0 }, doneTarget { -1 }, doneCount { 0 };
     std::atomic<int> ccMap[128];
     juce::RangedAudioParameter* params[P_count] {};
     std::atomic<int> monKind { 0 }, monA { 0 }, monB { 0 }, monCount { 0 };
     juce::int64 clockPos = 0, curPos = 0;
-    float satLo[2] {}, satHi[2] {}, satLp2[2] {}, satEnvIn[2] {}, satEnvOut[2] {}, satG[2] { 1.0f, 1.0f };
+    float satLev[2] {}, satHpS[2] {}, satLo[2] {}, satHi[2] {}, satLp2[2] {}, satEnvIn[2] {}, satEnvOut[2] {}, satG[2] { 1.0f, 1.0f };
 
     juce::AudioBuffer<float> delayBuf;
     int delayWrite = 0;
