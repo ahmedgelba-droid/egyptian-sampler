@@ -200,17 +200,17 @@ private:
     Knob *kMainLvl {}, *kMainPan {}, *kDuoLvl {}, *kDuoPan {}, *kMaster {};
     juce::Rectangle<int> pMixMain, pMixDuo, pMixMaster;
     juce::Rectangle<int> mixStrip[9];
-    Knob* vk[10] {};
-    juce::Rectangle<int> vePorta, veVel, veLimit, veTouch;
+    Knob* vk[17] {};
+    juce::Rectangle<int> vePorta, veSound, veVel, veLimit, veTouch;
 
     std::vector<std::unique_ptr<Knob>> knobs;
     Knob *kGain {}, *kAtk {}, *kRel {}, *kGlide {}, *kVibD {}, *kVibR {}, *kPb {},
-         *kSatDrive {}, *kSatMix {}, *kSatTone {}, *kSatBass {}, *kYamDrive {}, *kYamMix {}, *kYamWah {}, *kYamTone {}, *kYamShine {}, *kWahPos {}, *kWahMix {},
+         *kSatDrive {}, *kSatMix {}, *kSatTone {}, *kSatBass {},  *kWahPos {}, *kWahMix {},
          *kArpOct {}, *kArpGate {}, *kPhRate {}, *kPhDepth {}, *kPhMix {}, *kDlTime {}, *kDlFb {}, *kDlLvl {}, *kRvSize {}, *kRvLvl {};
 
     std::vector<std::unique_ptr<juce::ToggleButton>> toggles;
     std::vector<std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>> toggleAtts;
-    juce::ToggleButton *tMono {}, *tLegato {}, *tVel {}, *tArp {}, *tArpHold {}, *tSat {}, *tYam {}, *tBypass {}, *tPorta {}, *tMagic {}, *tWah {}, *tPh {}, *tVar {};
+    juce::ToggleButton *tMono {}, *tLegato {}, *tVel {}, *tArp {}, *tArpHold {}, *tSat {},  *tBypass {}, *tPorta {}, *tMagic {}, *tWah {}, *tPh {}, *tVar {};
 
     juce::ComboBox arpModeBox, arpRateBox;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> arpModeAtt, arpRateAtt;

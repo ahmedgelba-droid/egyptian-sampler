@@ -700,7 +700,7 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     tVel   = addToggle (page, P_velOn, "VELOCITY", gd);
     tMono   = addToggle (page, P_mono,   "MONO",   tq);
     tLegato = addToggle (page, P_legato, "LEGATO", tq);
-    tVar = addToggle (page, P_varOn, "NOTE VARIATION  (random neighbour sample)", pp);
+    tVar = addToggle (settings, P_varOn, "VARIATION", pp);
 
     // ---- scale tune: maqam presets, memory 1-5, bypass ----
     tBypass = addToggle (page, P_tuneBypass, "BYPASS (12-TET)", gd);
@@ -758,12 +758,6 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     kSatTone  = addKnob (mixer, P_satTone,  "MID", 2, "", gd);
     kSatBass  = addKnob (mixer, P_satBass,  "LOW", 2, "", gd);
 
-    tYam = addToggle (mixer, P_yamOn, "ACTIVE", cr);
-    kYamShine = addKnob (mixer, P_yamShine, "SHINE", 2, "", cr);
-    kYamDrive = addKnob (mixer, P_yamDrive, "DRIVE",  2, "", cr);
-    kYamMix   = addKnob (mixer, P_yamMix,   "AMOUNT", 2, "", cr);
-    kYamWah   = addKnob (mixer, P_yamWah,   "WAH",    2, "", cr);
-    kYamTone  = addKnob (mixer, P_yamTone,  "TONE",   2, "", cr);
 
 
     tWah = addToggle (mixer, P_wahOn, "ACTIVE", pp);
@@ -891,7 +885,7 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
         k->slider.setColour (juce::Slider::trackColourId, col);
         k->label.setVisible (false);
     };
-    mkFader (kMainLvl, tq);  mkFader (kDuoLvl, gd);  mkFader (kSatMix, gd);  mkFader (kYamMix, cr);  mkFader (kWahMix, pp);
+    mkFader (kMainLvl, tq);  mkFader (kDuoLvl, gd);  mkFader (kSatMix, gd);  mkFader (kWahMix, pp);
     mkFader (kPhMix, lp);    mkFader (kDlLvl, tq);   mkFader (kRvLvl, cr);    mkFader (kMaster, pp);
 
     // ---- voice edit page (Yamaha-style portamento / velocity / touch) ----
@@ -907,6 +901,13 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     vk[7] = addKnob (voiceEd, P_velHi,    "HIGH",        0, "",   pp);
     vk[8] = addKnob (voiceEd, P_tDepth,   "DEPTH",       0, "",   cr);
     vk[9] = addKnob (voiceEd, P_tOff,     "OFFSET",      0, "",   cr);
+    vk[10] = addKnob (voiceEd, P_kCut,     "CUTOFF",    0, "", cr);
+    vk[11] = addKnob (voiceEd, P_kRes,     "RESONANCE", 0, "", cr);
+    vk[12] = addKnob (voiceEd, P_yamWah,   "WAH",       2, "", cr);
+    vk[13] = addKnob (voiceEd, P_yamDrive, "DRIVE 2",   2, "", cr);
+    vk[14] = addKnob (voiceEd, P_yamTone,  "TONE",      2, "", cr);
+    vk[15] = addKnob (voiceEd, P_yamShine, "SHINE",     2, "", cr);
+    vk[16] = addKnob (voiceEd, P_yamMix,   "FX2 MIX",   2, "", cr);
     voiceButton.setColour (juce::TextButton::buttonColourId, pp);
     addAndMakeVisible (voiceButton);
     voiceButton.onClick = [this] { showView (view == 4 ? 0 : 4); };
@@ -1050,6 +1051,11 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
         drawPanel (g, veVel,   "VELOCITY TO PORTAMENTO TIME", neon::amber);
         drawPanel (g, veLimit, "VELOCITY LIMIT", neon::green);
         drawPanel (g, veTouch, "TOUCH SENSITIVITY", neon::magenta);
+        drawPanel (g, veSound, "KRONOS SOUND  (the KRONOS button switches all of this on)", neon::magenta);
+        g.setFont (uiFont (10.5f, false));
+        g.setColour (neon::dim);
+        g.drawText ("CUTOFF below 0 darkens the sound first (like the organ's filter).  Then wah + overdrive, KRONOS saturation, SHINE adds the sparkle.",
+                    veSound.getX() + 14, veSound.getBottom() - 20, 940, 14, juce::Justification::centredLeft, false);
         g.setFont (uiFont (10.5f, false));
         g.setColour (neon::dim);
         g.drawText ("These settings work only while MAGIC LEGATO is ON (it replaces GLIDE).  TIME = glide between notes.  THRESHOLD / FAST TIME = quicker glide when notes are played fast.",
@@ -1064,9 +1070,9 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     {
         g.drawImageAt (bgImage, -mixer.getX(), -mixer.getY());
 
-        const char* titles[9] = { "MAIN", "DUO", "KRONOS", "YAMAHA", "WAH", "PHASER", "DELAY", "REVERB", "MASTER" };
-        const juce::Colour cols[9] = { neon::cyan, neon::amber, neon::amber, neon::magenta, neon::green, neon::violet, neon::cyan, neon::magenta, neon::green };
-        for (int i = 0; i < 9; ++i)
+        const char* titles[8] = { "MAIN", "DUO", "KRONOS", "WAH", "PHASER", "DELAY", "REVERB", "MASTER" };
+        const juce::Colour cols[8] = { neon::cyan, neon::amber, neon::amber, neon::green, neon::violet, neon::cyan, neon::magenta, neon::green };
+        for (int i = 0; i < 8; ++i)
             drawPanel (g, mixStrip[i], titles[i], cols[i]);
 
         const int a = proc.getActiveGroup(), d = proc.getDuoGroup();
@@ -1077,22 +1083,22 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
 
         // master level meter
         {
-            const auto& s = mixStrip[8];
+            const auto& s = mixStrip[7];
             for (int ch = 0; ch < 2; ++ch)
             {
                 const float lv = proc.getMeter (ch);
                 const float db = 20.0f * std::log10 (juce::jmax (1.0e-4f, lv));
                 const float fr = juce::jlimit (0.0f, 1.0f, (db + 60.0f) / 66.0f);
-                const float bx = (float) s.getX() + 85.0f + (float) ch * 9.0f, by = 80.0f, bh = 268.0f;
+                const float bx = (float) s.getX() + 88.0f + (float) ch * 11.0f, by = 80.0f, bh = 268.0f;
                 g.setColour (juce::Colour (0xff02050a));
-                g.fillRoundedRectangle (bx, by, 7.0f, bh, 3.0f);
+                g.fillRoundedRectangle (bx, by, 8.0f, bh, 3.0f);
                 const float fh2 = bh * fr;
                 juce::ColourGradient cg (juce::Colour (0xffff4a3a), 0.0f, by, neon::green, 0.0f, by + bh, false);
                 cg.addColour (0.2, neon::amber);
                 g.setGradientFill (cg);
-                g.fillRoundedRectangle (bx, by + bh - fh2, 7.0f, fh2, 3.0f);
+                g.fillRoundedRectangle (bx, by + bh - fh2, 8.0f, fh2, 3.0f);
                 g.setColour (juce::Colour (0xffb8863a));
-                g.drawRoundedRectangle (bx, by, 7.0f, bh, 3.0f, 1.0f);
+                g.drawRoundedRectangle (bx, by, 8.0f, bh, 3.0f, 1.0f);
             }
         }
 
@@ -1938,15 +1944,17 @@ void NayAudioProcessorEditor::resized()
     settings.setBounds (pageRect);
     browse.setBounds (pageRect);
     voiceEd.setBounds (pageRect);
-    vePorta = { 0, 0, 968, 150 };
-    veVel   = { 0, 162, 968, 150 };
-    veLimit = { 0, 324, 476, 150 };
-    veTouch = { 492, 324, 476, 150 };
-    tPorta->setBounds (vePorta.getX() + 16, vePorta.getY() + 54, 160, 26);
-    layoutRow ({ 200, vePorta.getY() + 26, 600, 100 }, { vk[0], vk[1], vk[2] });
-    layoutRow ({ 200, veVel.getY() + 26, 600, 100 }, { vk[3], vk[4], vk[5] });
-    layoutRow ({ veLimit.getX() + 60, veLimit.getY() + 26, 360, 100 }, { vk[6], vk[7] });
-    layoutRow ({ veTouch.getX() + 60, veTouch.getY() + 26, 360, 100 }, { vk[8], vk[9] });
+    vePorta = { 0, 0, 968, 132 };
+    veVel   = { 0, 140, 968, 132 };
+    veLimit = { 0, 280, 476, 132 };
+    veTouch = { 492, 280, 476, 132 };
+    veSound = { 0, 420, 968, 160 };
+    tPorta->setBounds (vePorta.getX() + 16, vePorta.getY() + 50, 160, 26);
+    layoutRow ({ 14, veSound.getY() + 26, 940, 110 }, { vk[10], vk[11], vk[12], vk[13], vk[14], vk[15], vk[16] });
+    layoutRow ({ 200, vePorta.getY() + 26, 600, 84 }, { vk[0], vk[1], vk[2] });
+    layoutRow ({ 200, veVel.getY() + 26, 600, 84 }, { vk[3], vk[4], vk[5] });
+    layoutRow ({ veLimit.getX() + 60, veLimit.getY() + 26, 360, 84 }, { vk[6], vk[7] });
+    layoutRow ({ veTouch.getX() + 60, veTouch.getY() + 26, 360, 84 }, { vk[8], vk[9] });
     mixer.setBounds (pageRect);
 
     // ================= main page (local coords) =================
@@ -1991,7 +1999,7 @@ void NayAudioProcessorEditor::resized()
     mapView.setBounds (0, 68, 968, 524);
 
     pPerf = { 0, 362, 968, 132 };
-    tVar->setBounds (14, pPerf.getY() + 26, 420, 24);
+    tVar->setBounds (700, 18, 150, 24);
     pArp = { 0, 502, 560, 90 };           // smaller
     pWheels = { 568, 502, 400, 90 };      // bigger: wheels + bend range + transpose + octave
     pitchWheel.setBounds (pWheels.getX() + 8, pWheels.getY() + 36, 28, 50);
@@ -2017,13 +2025,13 @@ void NayAudioProcessorEditor::resized()
     browseInfo.setBounds (754, 330, 214, 228);
 
     // ================= mixer page: 8 channel strips =================
-    const int sw = 104, sg = 4;
-    for (int i = 0; i < 9; ++i)
+    const int sw = 117, sg = 4;
+    for (int i = 0; i < 8; ++i)
         mixStrip[i] = { i * (sw + sg), 0, sw, 572 };
 
     auto placeFader = [&] (Knob* k, int i)
     {
-        const int fxp = i == 8 ? mixStrip[i].getX() + 6 : mixStrip[i].getX() + (sw - 76) / 2;
+        const int fxp = i == 7 ? mixStrip[i].getX() + 6 : mixStrip[i].getX() + (sw - 76) / 2;
         k->slider.setBounds (fxp, 68, 76, 292);
     };
     auto placeKnob = [&] (Knob* k, int i, int slot)
@@ -2038,14 +2046,9 @@ void NayAudioProcessorEditor::resized()
     layoutRow ({ mixStrip[2].getX() + 14, 358, sw - 28, 68 }, { kSatDrive });
     layoutRow ({ mixStrip[2].getX() + 14, 428, sw - 28, 68 }, { kSatTone });
     layoutRow ({ mixStrip[2].getX() + 14, 498, sw - 28, 68 }, { kSatBass });
-    placeTog (tYam, 3);      placeFader (kYamMix, 3);
-    layoutRow ({ mixStrip[3].getX() + 14, 356, sw - 28, 52 }, { kYamDrive });
-    layoutRow ({ mixStrip[3].getX() + 14, 408, sw - 28, 52 }, { kYamWah });
-    layoutRow ({ mixStrip[3].getX() + 14, 460, sw - 28, 52 }, { kYamTone });
-    layoutRow ({ mixStrip[3].getX() + 14, 512, sw - 28, 52 }, { kYamShine });
-    placeTog (tWah, 4);      placeFader (kWahMix, 4);  placeKnob (kWahPos, 4, 0);
-    placeTog (tPh, 5);       placeFader (kPhMix, 5);   placeKnob (kPhRate, 5, 0); placeKnob (kPhDepth, 5, 1);
-    placeFader (kDlLvl, 6);  placeKnob (kDlTime, 6, 0); placeKnob (kDlFb, 6, 1);
-    placeFader (kRvLvl, 7);  placeKnob (kRvSize, 7, 0);
-    placeFader (kMaster, 8);
+    placeTog (tWah, 3);      placeFader (kWahMix, 3);  placeKnob (kWahPos, 3, 0);
+    placeTog (tPh, 4);       placeFader (kPhMix, 4);   placeKnob (kPhRate, 4, 0); placeKnob (kPhDepth, 4, 1);
+    placeFader (kDlLvl, 5);  placeKnob (kDlTime, 5, 0); placeKnob (kDlFb, 5, 1);
+    placeFader (kRvLvl, 6);  placeKnob (kRvSize, 6, 0);
+    placeFader (kMaster, 7);
 }

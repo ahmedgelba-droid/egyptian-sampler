@@ -37,6 +37,7 @@ struct NayVoice
     juce::ADSR adsr;
     double posA = 0.0, posB = 0.0, pitch = 60.0, target = 60.0, vibPhase = 0.0;
     float detune = 0.f;
+    float xf = 1.0f, xfStep = 0.0f;   // crossfade-in of a replaced sample (MAGIC LEGATO)
     float velGain = 1.0f, velFc = 18000.f, lp = 0.f, lpB = 0.f, glideMs = -1.f;   // glideMs < 0 = use the PORTAMENTO TIME knob
     int note = -1;
     bool gate = false;
@@ -56,7 +57,7 @@ enum NayParam
     P_transpose, P_octave,
     P_mainLevel, P_mainPan, P_mainMute, P_duoLevel, P_duoPan, P_duoMute, P_master, P_varOn, P_satTone, P_satBass,
     P_yamOn, P_yamMix, P_yamDrive, P_yamWah, P_yamTone,
-    P_tuneBypass, P_yamShine, P_portaOn, P_fastThr, P_fastTime, P_vSens, P_vRef, P_minTime, P_velLo, P_velHi, P_tDepth, P_tOff, P_magicTime,
+    P_tuneBypass, P_yamShine, P_portaOn, P_fastThr, P_fastTime, P_vSens, P_vRef, P_minTime, P_velLo, P_velHi, P_tDepth, P_tOff, P_magicTime, P_kCut, P_kRes,
     P_count
 };
 
@@ -258,6 +259,9 @@ private:
 
     // voices (mono mode uses voices[0] only)
     std::array<NayVoice, kNumVoices> voices;
+    std::array<NayVoice, 6> ghosts;        // voices that are being faded out (stolen / replaced) so there is no click
+    int ghostIdx = 0;
+    void spawnGhost (const NayVoice&, float releaseSec);
     std::vector<int> held;
     int heldVel[128] {};
     juce::uint64 ageCounter = 0;
@@ -293,7 +297,8 @@ private:
     juce::int64 clockPos = 0, curPos = 0;
     double lastNoteOnMs = 0.0;
     float satLev[2] {}, satHpS[2] {}, satLo[2] {}, satHi[2] {}, satLp2[2] {}, satEnvIn[2] {}, satEnvOut[2] {}, satG[2] { 1.0f, 1.0f };
-    SatBq yamWah, yamLo, yamHi, yamDLo, yamLpf, yamPres;
+    SatBq yamWah, yamLo, yamHi, yamDLo, yamLpf, yamPres, yamVf;
+    float satEng[2] {}, yamEng[2] {};
     float yamLev[2] {}, yamHpS[2] {}, yamDcX[2] {}, yamDcY[2] {}, yamEnvIn[2] {}, yamEnvOut[2] {}, yamG[2] { 1.0f, 1.0f };
 
     juce::AudioBuffer<float> delayBuf;

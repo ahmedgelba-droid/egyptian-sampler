@@ -20,7 +20,7 @@ const char* const NayAudioProcessor::paramIds[P_count] =
     "arpOn", "arpMode", "arpRate", "arpOct", "arpGate", "arpHold",
     "transpose", "octave",
     "mainLevel", "mainPan", "mainMute", "duoLevel", "duoPan", "duoMute", "master", "varOn", "satTone", "satBass", "yamOn", "yamMix", "yamDrive", "yamWah", "yamTone",
-    "tuneBypass", "yamShine", "portaOn", "fastThr", "fastTime", "vSens", "vRef", "minTime", "velLo", "velHi", "tDepth", "tOff", "magicTime"
+    "tuneBypass", "yamShine", "portaOn", "fastThr", "fastTime", "vSens", "vRef", "minTime", "velLo", "velHi", "tDepth", "tOff", "magicTime", "kCut", "kRes"
 };
 
 //==============================================================================
@@ -106,6 +106,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout NayAudioProcessor::createLay
     l.add (std::make_unique<F> (id (P_tDepth),     "Touch Depth", R (0.f, 127.f, 1.f), 127.f));
     l.add (std::make_unique<F> (id (P_tOff),       "Touch Offset", R (0.f, 127.f, 1.f), 70.f));
     l.add (std::make_unique<F> (id (P_magicTime),  "Magic Legato Time", R (0.f, 127.f, 1.f), 0.f));
+    l.add (std::make_unique<F> (id (P_kCut), "KRONOS Cutoff", R (-64.f, 63.f, 1.f), 0.f));
+    l.add (std::make_unique<F> (id (P_kRes), "KRONOS Resonance", R (-64.f, 63.f, 1.f), 0.f));
 
 
     for (int i = 0; i < 12; ++i)
@@ -145,6 +147,14 @@ void NayAudioProcessor::prepareToPlay (double sampleRate, int)
 {
     sr = sampleRate;
 
+    for (auto& g : ghosts)
+    {
+        g.adsr.setSampleRate (sampleRate);
+        g.adsr.reset();
+        g.sa.reset();
+        g.sb.reset();
+    }
+    satEng[0] = satEng[1] = yamEng[0] = yamEng[1] = 0.f;
     for (auto& v : voices)
     {
         v.adsr.setSampleRate (sampleRate);
@@ -166,7 +176,7 @@ void NayAudioProcessor::prepareToPlay (double sampleRate, int)
         yamLev[c2] = yamHpS[c2] = yamDcX[c2] = yamDcY[c2] = yamEnvIn[c2] = yamEnvOut[c2] = 0.f;
         yamG[c2] = 1.0f;
     }
-    for (auto* b : { &yamWah, &yamLo, &yamHi, &yamDLo, &yamLpf, &yamPres })
+    for (auto* b : { &yamWah, &yamLo, &yamHi, &yamDLo, &yamLpf, &yamPres, &yamVf })
         for (int c2 = 0; c2 < 2; ++c2) { b->z1[c2] = 0.f; b->z2[c2] = 0.f; }
 
     reverb.setSampleRate (sampleRate);
@@ -585,6 +595,21 @@ void NayAudioProcessor::applyVelocity (NayVoice& v, int vel)
     v.velFc = 18000.f + (soft - 18000.f) * pVelSens;
 }
 
+void NayAudioProcessor::spawnGhost (const NayVoice& v, float releaseSec)
+{
+    if (! v.adsr.isActive() || (v.sa == nullptr && v.sb == nullptr))
+        return;
+
+    auto& g = ghosts[(size_t) (ghostIdx++ % (int) ghosts.size())];
+    g = v;
+    g.adsr.setSampleRate (sr);
+    g.adsr.setParameters ({ 0.001f, 0.05f, 1.0f, juce::jmax (0.003f, releaseSec) });
+    g.gate = false;
+    g.xf = 1.0f;
+    g.xfStep = 0.0f;
+    g.adsr.noteOff();
+}
+
 void NayAudioProcessor::startVoice (NayVoice& v, int note, int vel,
                                     const std::shared_ptr<const NayBank>& a,
                                     const std::shared_ptr<const NayBank>& b)
@@ -597,6 +622,10 @@ void NayAudioProcessor::startVoice (NayVoice& v, int note, int vel,
     if (sa == nullptr && sb == nullptr)
         return;
 
+    spawnGhost (v, 0.012f);            // the old sound fades out quickly instead of being cut (no click)
+    v.adsr.reset();
+    v.xf = 1.0f;
+    v.xfStep = 0.0f;
     v.sa = sa;
     v.sb = sb;
     v.posA = v.posB = 0.0;
@@ -651,7 +680,9 @@ void NayAudioProcessor::handleMidi (const juce::MidiMessage& msg,
             held.push_back (n);
 
             auto& v = voices[0];
-            if (pLegato && wasHeld && v.adsr.isActive() && (v.sa != nullptr || v.sb != nullptr))
+            const bool magicOn = getP (P_portaOn) > 0.5f;
+            const bool recent = magicOn && v.adsr.isActive() && gapMs < 150.0;   // fast key after key still counts as legato
+            if (pLegato && (wasHeld || recent) && v.adsr.isActive() && (v.sa != nullptr || v.sb != nullptr))
             {
                 // legato: no retrigger, just glide
                 v.note = n;
@@ -664,6 +695,31 @@ void NayAudioProcessor::handleMidi (const juce::MidiMessage& msg,
                         t = ms (getP (P_fastTime));
                     t *= std::exp (-((float) vel - getP (P_vRef)) / 127.0f * (getP (P_vSens) / 127.0f) * 4.0f);
                     v.glideMs = juce::jmax (t, ms (getP (P_minTime)));
+
+                    // crossfade between the old and the new sample like the Yamaha / Kronos "crossfade portamento":
+                    // slow key press = slow blend, fast playing = fast blend, harder touch = quicker
+                    double xfMs = juce::jlimit (8.0, 350.0, gapMs * 0.4);
+                    if (gapMs < (double) getP (P_fastThr) * 8.0)
+                        xfMs = 8.0 + (double) ms (getP (P_fastTime));
+                    xfMs *= (double) std::exp (-((float) vel - getP (P_vRef)) / 127.0f * (getP (P_vSens) / 127.0f) * 4.0f);
+                    xfMs = juce::jmax (xfMs, 6.0 + (double) ms (getP (P_minTime)));
+
+                    auto sa2 = pickSample (a.get(), n, vel, lastPicked);
+                    std::shared_ptr<NaySample> sb2;
+                    if (b != nullptr)
+                        sb2 = pickSample (b.get(), n, vel, lastPickedB);
+                    if (sa2 != nullptr || sb2 != nullptr)
+                    {
+                        spawnGhost (v, (float) (xfMs * 0.001));
+                        v.sa = sa2;
+                        v.sb = sb2;
+                        v.posA = v.posB = 0.0;
+                        v.lp = v.lpB = 0.0f;
+                        v.pitch = v.target;
+                        v.glideMs = 0.0f;
+                        v.xf = 0.0f;
+                        v.xfStep = (float) (1.0 / juce::jmax (1.0, xfMs * 0.001 * sr));
+                    }
                 }
                 else
                     v.glideMs = -1.0f;
@@ -832,7 +888,9 @@ void NayAudioProcessor::renderVoice (NayVoice& v, juce::AudioBuffer<float>& buf,
 
         v.lp  += lpA * (mA - v.lp);
         v.lpB += lpA * (mB - v.lpB);
-        const float env = v.adsr.getNextSample() * v.velGain * pGain * std::pow (es, 1.5f);
+        if (v.xf < 1.0f)
+            v.xf = juce::jmin (1.0f, v.xf + v.xfStep);
+        const float env = v.adsr.getNextSample() * v.xf * v.velGain * pGain * std::pow (es, 1.5f);
         const float oa = v.lp * env, ob = v.lpB * env;
 
         if (R != nullptr)
@@ -859,6 +917,9 @@ void NayAudioProcessor::renderAll (juce::AudioBuffer<float>& buf, int start, int
         for (auto& v : voices)
             renderVoice (v, buf, start, num);
 
+    for (auto& g : ghosts)
+        renderVoice (g, buf, start, num);
+
     exprSm += (expr - exprSm) * (1.0f - std::pow (0.997f, (float) num));
 }
 
@@ -868,7 +929,7 @@ void NayAudioProcessor::renderAll (juce::AudioBuffer<float>& buf, int start, int
 // loudness whether the effect is on or off, at any DRIVE / AMOUNT.
 void NayAudioProcessor::processSaturation (juce::AudioBuffer<float>& buffer)
 {
-    if (! pSatOn)
+    if (! pSatOn && satEng[0] < 0.001f && satEng[1] < 0.001f)
         return;
 
     // KRONOS = the Yamaha PSR-A5000 insertion effect "Auto Wah + OD Hard" used for the electric-violin lead:
@@ -895,6 +956,8 @@ void NayAudioProcessor::processSaturation (juce::AudioBuffer<float>& buffer)
 
     const int n = buffer.getNumSamples();
     const int chans = juce::jmin (buffer.getNumChannels(), 2);
+    const float aEng = 1.0f - std::exp (-1.0f / (0.03f * fs));
+    const float engTarget = pSatOn ? 1.0f : 0.0f;
 
     for (int ch = 0; ch < chans; ++ch)
     {
@@ -902,6 +965,7 @@ void NayAudioProcessor::processSaturation (juce::AudioBuffer<float>& buffer)
 
         for (int i = 0; i < n; ++i)
         {
+            satEng[ch] += aEng * (engTarget - satEng[ch]);
             const float xd = d[i];
 
             satHpS[ch] += aHp * (xd - satHpS[ch]);
@@ -934,7 +998,7 @@ void NayAudioProcessor::processSaturation (juce::AudioBuffer<float>& buffer)
             }
 
             const float wet = hp * satG[ch];
-            d[i] = xd + (wet - xd) * mix;
+            d[i] = xd + (wet - xd) * mix * satEng[ch];
         }
     }
 }
@@ -945,7 +1009,8 @@ void NayAudioProcessor::processSaturation (juce::AudioBuffer<float>& buffer)
 // LPF 3.6 kHz. Dark and tight. Knobs: DRIVE, WAH (cutoff), TONE (high shelf cut), AMOUNT (dry/wet).
 void NayAudioProcessor::processYamaha (juce::AudioBuffer<float>& buffer)
 {
-    if (getP (P_yamOn) < 0.5f)
+    const bool on = pSatOn;                                  // one KRONOS button drives both stages
+    if (! on && yamEng[0] < 0.001f && yamEng[1] < 0.001f)
         return;
 
     const float fs = (float) sr;
@@ -954,6 +1019,13 @@ void NayAudioProcessor::processYamaha (juce::AudioBuffer<float>& buffer)
     const float wahHz = 350.0f * std::pow (2.0f, 3.0f * getP (P_yamWah));   // 350 Hz .. 2.8 kHz
     const float hiDb = -24.0f * getP (P_yamTone);                           // 0.5 -> -12 dB like the organ
 
+    {   // voice filter first (cutoff / resonance like the organ's SOUND page); neutral at 0
+        const float cut = getP (P_kCut), res = getP (P_kRes);
+        const float fc = cut < 0.0f ? 18000.0f * std::pow (2.0f, cut / 64.0f * 4.5f) : 18000.0f;
+        yamVf.lowpass (fs, juce::jmin (fc, 0.45f * fs), 0.707f * std::pow (2.0f, res / 64.0f * 1.5f));
+    }
+    const bool vfOn = getP (P_kCut) < 0.0f || getP (P_kRes) != 0.0f;
+    const float aEng = 1.0f - std::exp (-1.0f / (0.03f * fs));
     yamWah.bandpass (fs, wahHz, 2.3f);
     yamLo.lowShelf (fs, 225.0f, -7.0f);
     yamDLo.lowShelf (fs, 250.0f, 5.0f);
@@ -978,10 +1050,13 @@ void NayAudioProcessor::processYamaha (juce::AudioBuffer<float>& buffer)
 
         for (int i = 0; i < n; ++i)
         {
+            yamEng[ch] += aEng * ((on ? 1.0f : 0.0f) - yamEng[ch]);
             const float xd = d[i];
 
             yamHpS[ch] += aHp * (xd - yamHpS[ch]);
             float x = xd - yamHpS[ch];
+            if (vfOn)
+                x = yamVf.tick (ch, x);
 
             const float ax = std::abs (x);
             yamLev[ch] += (ax > yamLev[ch] ? aAtt : aRel) * (ax - yamLev[ch]);
@@ -1009,7 +1084,7 @@ void NayAudioProcessor::processYamaha (juce::AudioBuffer<float>& buffer)
                 yamG[ch] += aGain * (target - yamG[ch]);
             }
 
-            d[i] = xd + (hp * yamG[ch] - xd) * mix;
+            d[i] = xd + (hp * yamG[ch] - xd) * mix * yamEng[ch];
         }
     }
 }
@@ -1449,8 +1524,8 @@ void NayAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     renderAll (buffer, pos, total - pos);
     clockPos += total;
 
-    processSaturation (buffer);
     processYamaha (buffer);
+    processSaturation (buffer);
     processWah (buffer);
     processPhaser (buffer);
     processDelay (buffer);
