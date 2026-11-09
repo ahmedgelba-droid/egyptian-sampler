@@ -20,7 +20,8 @@ const char* const NayAudioProcessor::paramIds[P_count] =
     "arpOn", "arpMode", "arpRate", "arpOct", "arpGate", "arpHold",
     "transpose", "octave",
     "mainLevel", "mainPan", "mainMute", "duoLevel", "duoPan", "duoMute", "master", "varOn", "satTone", "satBass", "yamOn", "yamMix", "yamDrive", "yamWah", "yamTone",
-    "tuneBypass", "yamShine", "portaOn", "fastThr", "fastTime", "vSens", "vRef", "minTime", "velLo", "velHi", "tDepth", "tOff", "magicTime", "kCut", "kRes"
+    "tuneBypass", "yamShine", "portaOn", "fastThr", "fastTime", "vSens", "vRef", "minTime", "velLo", "velHi", "tDepth", "tOff", "magicTime", "kCut", "kRes",
+    "oscOn", "oscOnly", "oscWave", "oscLevel", "oscTune", "oscFine", "oscCut", "oscPan", "oscMute"
 };
 
 //==============================================================================
@@ -109,6 +110,17 @@ juce::AudioProcessorValueTreeState::ParameterLayout NayAudioProcessor::createLay
     l.add (std::make_unique<F> (id (P_kCut), "KRONOS Cutoff", R (-64.f, 63.f, 1.f), 0.f));
     l.add (std::make_unique<F> (id (P_kRes), "KRONOS Resonance", R (-64.f, 63.f, 1.f), 0.f));
 
+    // OSCILLATOR channel: its own mixer strip (level / pan / mute / SOLO), follows glide / bend / vibrato / maqam
+    l.add (std::make_unique<B> (id (P_oscOn),    "Oscillator On", false));
+    l.add (std::make_unique<B> (id (P_oscOnly),  "Oscillator Solo", false));
+    l.add (std::make_unique<C> (id (P_oscWave),  "Oscillator Wave", juce::StringArray { "Sine", "Saw", "Square", "Triangle" }, 1));
+    l.add (std::make_unique<F> (id (P_oscLevel), "Oscillator Level (dB)", R (-60.f, 6.f, 0.1f), -12.f));
+    l.add (std::make_unique<F> (id (P_oscTune),  "Oscillator Tune (st)", R (-24.f, 24.f, 1.f), 0.f));
+    l.add (std::make_unique<F> (id (P_oscFine),  "Oscillator Fine (ct)", R (-100.f, 100.f, 1.f), 0.f));
+    l.add (std::make_unique<F> (id (P_oscCut),   "Oscillator Filter (Hz)", R (100.f, 18000.f, 1.f, 0.3f), 18000.f));
+    l.add (std::make_unique<F> (id (P_oscPan),   "Oscillator Pan", R (-1.f, 1.f, 0.01f), 0.f));
+    l.add (std::make_unique<B> (id (P_oscMute),  "Oscillator Mute", false));
+
 
     for (int i = 0; i < 12; ++i)
         l.add (std::make_unique<F> (juce::ParameterID { "off" + juce::String (i), 1 },
@@ -133,7 +145,10 @@ NayAudioProcessor::NayAudioProcessor()
         offRaw[i] = apvts.getRawParameterValue ("off" + juce::String (i));
 
     // the factory library (if installed) is always available; the first instrument opens by default
-    if (libraryRoot().isDirectory() && scanFolder (libraryRoot()) > 0)
+    if (libraryRoot().isDirectory())
+        scanFolder (libraryRoot());
+    scanInstruments (instrumentsDir());   // the user's own instruments (.esi files)
+    if (! groups.empty())
         selectGroup (0);
 }
 
@@ -155,6 +170,10 @@ void NayAudioProcessor::prepareToPlay (double sampleRate, int)
         g.sb.reset();
     }
     satEng[0] = satEng[1] = yamEng[0] = yamEng[1] = 0.f;
+    previewVoice.adsr.setSampleRate (sampleRate);
+    previewVoice.adsr.reset();
+    previewVoice.sa.reset();
+    previewVoice.preview = true;
     for (auto& v : voices)
     {
         v.adsr.setSampleRate (sampleRate);
@@ -254,6 +273,60 @@ void NayAudioProcessor::autoZones (const NayBank& b)
     }
 }
 
+// Reads one audio file (mono mix, max 30 s) + the loop points saved in its 'smpl' chunk. Root is NOT set here.
+std::shared_ptr<NaySample> NayAudioProcessor::readAudioFile (const juce::File& f, juce::AudioFormatManager& fm)
+{
+    std::unique_ptr<juce::AudioFormatReader> reader (fm.createReaderFor (f));
+    if (reader == nullptr || reader->lengthInSamples < 4 || reader->sampleRate <= 0.0)
+        return nullptr;
+
+    const int len = (int) juce::jmin<juce::int64> (reader->lengthInSamples, (juce::int64) (reader->sampleRate * 60.0));
+    const int chans = juce::jmax (1, (int) reader->numChannels);
+
+    juce::AudioBuffer<float> tmp (chans, len);
+    reader->read (&tmp, 0, len, 0, true, true);
+
+    // stereo stays stereo (no mono mix: summing an organ's stereo chorus to mono changes its sound)
+    auto s = std::make_shared<NaySample>();
+    s->fileName = f.getFileName();
+    s->sampleRate = reader->sampleRate;
+    s->data.setSize (chans >= 2 ? 2 : 1, len);
+    s->data.copyFrom (0, 0, tmp, 0, 0, len);
+    if (chans >= 2)
+        s->data.copyFrom (1, 0, tmp, 1, 0, len);
+
+    const int nl = reader->metadataValues.getValue ("NumSampleLoops", "0").getIntValue();
+    if (nl > 0)
+    {
+        const int ls = reader->metadataValues.getValue ("Loop0Start", "-1").getIntValue();
+        const int le = reader->metadataValues.getValue ("Loop0End", "-1").getIntValue();
+        if (ls >= 0 && le > ls + 8 && le < len)
+        {
+            s->loopStart = ls;
+            s->loopEnd = le;
+        }
+    }
+    return s;
+}
+
+// Saved per-sample edits (mapping, root, tune, loop) are matched by file name.
+void NayAudioProcessor::applyOverrides (const NayBank& b, const std::vector<NayZoneOv>& ov)
+{
+    for (const auto& z : ov)
+        for (const auto& s : b)
+            if (s->fileName == z.file)
+            {
+                s->root = z.root; s->lo = z.lo; s->hi = z.hi; s->vlo = z.vlo; s->vhi = z.vhi;
+                s->tune = z.tune;
+                if (z.xf != -2) s->xfade = z.xf;
+                if (z.ls != -2 && z.le != -2)
+                {
+                    const int len = s->data.getNumSamples();
+                    if (z.ls < 0 || (z.le > z.ls + 8 && z.le < len)) { s->loopStart = z.ls; s->loopEnd = z.le; }
+                }
+            }
+}
+
 std::shared_ptr<const NayBank> NayAudioProcessor::loadBank (const juce::File& folder, const std::vector<NayZoneOv>& ov)
 {
     juce::AudioFormatManager fm;
@@ -267,55 +340,523 @@ std::shared_ptr<const NayBank> NayAudioProcessor::loadBank (const juce::File& fo
         if (root < 0)
             continue;
 
-        std::unique_ptr<juce::AudioFormatReader> reader (fm.createReaderFor (f));
-        if (reader == nullptr || reader->lengthInSamples < 4)
-            continue;
-
-        const int len = (int) juce::jmin<juce::int64> (reader->lengthInSamples, (juce::int64) (reader->sampleRate * 30.0));
-        const int chans = (int) reader->numChannels;
-
-        juce::AudioBuffer<float> tmp (chans, len);
-        reader->read (&tmp, 0, len, 0, true, true);
-
-        auto s = std::make_shared<NaySample>();
-        s->fileName = f.getFileName();
-        s->root = root;
-        s->sampleRate = reader->sampleRate;
-        s->data.setSize (1, len);
-        s->data.clear();
-        for (int ch = 0; ch < chans; ++ch)
-            s->data.addFrom (0, 0, tmp, ch, 0, len, 1.0f / (float) chans);
-
+        if (auto s = readAudioFile (f, fm))
         {
-            const int nl = reader->metadataValues.getValue ("NumSampleLoops", "0").getIntValue();
-            if (nl > 0)
-            {
-                const int ls = reader->metadataValues.getValue ("Loop0Start", "-1").getIntValue();
-                const int le = reader->metadataValues.getValue ("Loop0End", "-1").getIntValue();
-                if (ls >= 0 && le > ls + 8 && le < len)
-                {
-                    s->loopStart = ls;
-                    s->loopEnd = le;
-                }
-            }
+            s->root = root;
+            s->detectInfo = "from file name";
+            newBank->push_back (s);
         }
-
-        newBank->push_back (s);
     }
 
     std::sort (newBank->begin(), newBank->end(),
                [] (const auto& a, const auto& b) { return a->root.load() < b->root.load(); });
 
     autoZones (*newBank);
-
-    for (const auto& z : ov)
-        for (const auto& s : *newBank)
-            if (s->fileName == z.file)
-            {
-                s->root = z.root; s->lo = z.lo; s->hi = z.hi; s->vlo = z.vlo; s->vhi = z.vhi;
-            }
-
+    applyOverrides (*newBank, ov);
     return newBank;
+}
+
+//==============================================================================
+// .esi instrument file:  "ESI1" | u32 headerSize | header XML | per sample: u32 size | FLAC 24-bit mono
+// The header and the audio are scrambled so the file only opens in Egyptian Sampler (light protection, not real
+// encryption).
+static void esiScramble (void* data, size_t size, juce::uint32 seed)
+{
+    auto* p = static_cast<juce::uint8*> (data);
+    juce::uint32 x = (seed + 1u) * 2654435761u ^ 0x5EB1A7E5u;
+    if (x == 0) x = 0x1234567u;
+    for (size_t i = 0; i < size; ++i)
+    {
+        x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+        p[i] ^= (juce::uint8) (x >> 24);
+    }
+}
+
+static std::unique_ptr<juce::XmlElement> esiReadHeader (juce::InputStream& in)
+{
+    char magic[4] {};
+    if (in.read (magic, 4) != 4 || std::memcmp (magic, "ESI1", 4) != 0)
+        return nullptr;
+    const int hs = in.readInt();
+    if (hs <= 0 || hs > 16 * 1024 * 1024)
+        return nullptr;
+    juce::MemoryBlock hb ((size_t) hs);
+    if (in.read (hb.getData(), hs) != hs)
+        return nullptr;
+    esiScramble (hb.getData(), hb.getSize(), 0);
+    auto xml = juce::parseXML (hb.toString());
+    if (xml == nullptr || ! xml->hasTagName ("ESI"))
+        return nullptr;
+    return xml;
+}
+
+bool NayAudioProcessor::readEsiHeader (const juce::File& file, juce::String& name, juce::String& category)
+{
+    juce::FileInputStream in (file);
+    if (! in.openedOk())
+        return false;
+    auto xml = esiReadHeader (in);
+    if (xml == nullptr)
+        return false;
+    name = xml->getStringAttribute ("name", file.getFileNameWithoutExtension());
+    category = xml->getStringAttribute ("category", "My Instruments");
+    return true;
+}
+
+std::shared_ptr<const NayBank> NayAudioProcessor::loadEsi (const juce::File& file, const std::vector<NayZoneOv>& ov)
+{
+    auto bank = std::make_shared<NayBank>();
+    juce::FileInputStream in (file);
+    if (! in.openedOk())
+        return bank;
+    auto xml = esiReadHeader (in);
+    if (xml == nullptr)
+        return bank;
+
+    juce::FlacAudioFormat flac;
+    int idx = 0;
+    for (auto* e : xml->getChildWithTagNameIterator ("S"))
+    {
+        ++idx;
+        const int size = in.readInt();
+        if (size <= 0 || size > 512 * 1024 * 1024)
+            break;
+        juce::MemoryBlock mb ((size_t) size);
+        if (in.read (mb.getData(), size) != size)
+            break;
+        esiScramble (mb.getData(), mb.getSize(), (juce::uint32) idx);
+
+        std::unique_ptr<juce::AudioFormatReader> r (flac.createReaderFor (new juce::MemoryInputStream (mb, false), true));
+        if (r == nullptr || r->lengthInSamples < 4)
+            continue;
+
+        auto s = std::make_shared<NaySample>();
+        const int len = (int) r->lengthInSamples;
+        const bool st = r->numChannels >= 2;
+        s->data.setSize (st ? 2 : 1, len);
+        r->read (&s->data, 0, len, 0, true, st);
+        s->xfade = e->getIntAttribute ("xf", -1);
+        s->fileName = e->getStringAttribute ("file");
+        s->sampleRate = r->sampleRate;
+        s->root = e->getIntAttribute ("root", 60);
+        s->lo = e->getIntAttribute ("lo", 0);
+        s->hi = e->getIntAttribute ("hi", 127);
+        s->vlo = e->getIntAttribute ("vlo", 1);
+        s->vhi = e->getIntAttribute ("vhi", 127);
+        s->tune = (float) e->getDoubleAttribute ("tune", 0.0);
+        s->detectInfo = e->getStringAttribute ("info");
+        const int ls = e->getIntAttribute ("ls", -1), le = e->getIntAttribute ("le", -1);
+        if (ls >= 0 && le > ls + 8 && le < len) { s->loopStart = ls; s->loopEnd = le; }
+        bank->push_back (s);
+    }
+
+    std::sort (bank->begin(), bank->end(), [] (const auto& a, const auto& b) { return a->root.load() < b->root.load(); });
+    applyOverrides (*bank, ov);
+    return bank;
+}
+
+bool NayAudioProcessor::writeEsi (const juce::File& file, const juce::String& name, const juce::String& category, const NayBank& bank)
+{
+    juce::XmlElement xml ("ESI");
+    xml.setAttribute ("version", 1);
+    xml.setAttribute ("name", name);
+    xml.setAttribute ("category", category);
+
+    std::vector<juce::MemoryBlock> audio;
+    juce::FlacAudioFormat flac;
+    for (const auto& s : bank)
+    {
+        juce::MemoryBlock mb;
+        {
+            const int sr = juce::jlimit (8000, 384000, (int) std::lround (s->sampleRate));
+            auto out = std::make_unique<juce::MemoryOutputStream> (mb, false);
+            std::unique_ptr<juce::AudioFormatWriter> w (flac.createWriterFor (out.get(), (double) sr, (unsigned int) s->data.getNumChannels(), 24, {}, 5));
+            if (w == nullptr)
+                return false;
+            out.release();   // the writer owns the stream now
+            w->writeFromAudioSampleBuffer (s->data, 0, s->data.getNumSamples());
+        }
+        esiScramble (mb.getData(), mb.getSize(), (juce::uint32) (audio.size() + 1));
+        audio.push_back (std::move (mb));
+
+        auto* e = xml.createNewChildElement ("S");
+        e->setAttribute ("file", s->fileName);
+        e->setAttribute ("root", s->root.load());
+        e->setAttribute ("lo", s->lo.load());
+        e->setAttribute ("hi", s->hi.load());
+        e->setAttribute ("vlo", s->vlo.load());
+        e->setAttribute ("vhi", s->vhi.load());
+        e->setAttribute ("tune", (double) s->tune.load());
+        e->setAttribute ("ls", s->loopStart.load());
+        e->setAttribute ("le", s->loopEnd.load());
+        e->setAttribute ("xf", s->xfade.load());
+        e->setAttribute ("info", s->detectInfo);
+    }
+
+    juce::MemoryBlock hb;
+    {
+        const auto t = xml.toString (juce::XmlElement::TextFormat().singleLine().withoutHeader());
+        hb.append (t.toRawUTF8(), t.getNumBytesAsUTF8());
+    }
+    esiScramble (hb.getData(), hb.getSize(), 0);
+
+    file.getParentDirectory().createDirectory();
+    juce::TemporaryFile tmp (file);
+    {
+        juce::FileOutputStream out (tmp.getFile());
+        if (! out.openedOk())
+            return false;
+        out.write ("ESI1", 4);
+        out.writeInt ((int) hb.getSize());
+        out.write (hb.getData(), hb.getSize());
+        for (const auto& mb : audio)
+        {
+            out.writeInt ((int) mb.getSize());
+            out.write (mb.getData(), mb.getSize());
+        }
+        out.flush();
+        if (out.getStatus().failed())
+            return false;
+    }
+    return tmp.overwriteTargetFileWithTemporary();
+}
+
+//==============================================================================
+// Pitch detection (YIN) on the steady part of the sample. Root = nearest key, tune = cents that bring it in tune.
+void NayAudioProcessor::detectRoot (NaySample& s)
+{
+    const int len = s.data.getNumSamples();
+    const double fs = s.sampleRate;
+    const auto mono = monoOf (s);
+    const float* x = mono.data();
+    const int W = fs > 60000.0 ? 4096 : 2048;
+    const int tMin = juce::jmax (2, (int) (fs / 2000.0)), tMax = (int) (fs / 40.0);
+
+    std::vector<float> d ((size_t) tMax + 2);
+    std::vector<double> found;
+    for (double frac : { 0.30, 0.40, 0.50, 0.60 })
+    {
+        const int st = (int) (len * frac);
+        if (st + W + tMax + 2 >= len)
+            continue;
+
+        double energy = 0.0;
+        for (int j = 0; j < W; ++j) energy += (double) x[st + j] * x[st + j];
+        if (energy / W < 1.0e-7)
+            continue;   // silence
+
+        for (int tau = 1; tau <= tMax; ++tau)
+        {
+            double acc = 0.0;
+            for (int j = 0; j < W; ++j)
+            {
+                const double df = (double) x[st + j] - (double) x[st + j + tau];
+                acc += df * df;
+            }
+            d[(size_t) tau] = (float) acc;
+        }
+        // cumulative mean normalised difference
+        double run = 0.0;
+        d[0] = 1.0f;
+        for (int tau = 1; tau <= tMax; ++tau)
+        {
+            run += d[(size_t) tau];
+            d[(size_t) tau] = run > 0.0 ? (float) (d[(size_t) tau] * tau / run) : 1.0f;
+        }
+
+        int best = -1;
+        for (int tau = tMin; tau < tMax; ++tau)
+            if (d[(size_t) tau] < 0.15f)
+            {
+                while (tau + 1 < tMax && d[(size_t) tau + 1] < d[(size_t) tau]) ++tau;
+                best = tau;
+                break;
+            }
+        if (best < 0)
+        {
+            float mn = 0.4f;
+            for (int tau = tMin; tau < tMax; ++tau)
+                if (d[(size_t) tau] < mn) { mn = d[(size_t) tau]; best = tau; }
+        }
+        if (best <= tMin || best >= tMax - 1)
+            continue;
+
+        const double a = d[(size_t) best - 1], b = d[(size_t) best], c = d[(size_t) best + 1];
+        const double den = a - 2.0 * b + c;
+        const double t = (double) best + (std::abs (den) > 1.0e-12 ? 0.5 * (a - c) / den : 0.0);
+        found.push_back (69.0 + 12.0 * std::log2 ((fs / t) / 440.0));
+    }
+
+    if (found.empty())
+    {
+        s.detectInfo = "note not detected - set ROOT by hand";
+        return;
+    }
+
+    std::sort (found.begin(), found.end());
+    const double midi = found[found.size() / 2];
+    const int root = juce::jlimit (0, 127, (int) std::lround (midi));
+    s.root = root;
+    s.tune = (float) juce::jlimit (-100.0, 100.0, -(midi - (double) root) * 100.0);
+    s.detectInfo = "detected " + juce::String (kNoteNames[root % 12]) + juce::String (root / 12 - 1)
+                 + juce::String (s.tune.load() >= 0 ? " +" : " ") + juce::String ((int) std::lround (s.tune.load())) + " ct";
+}
+
+std::vector<float> NayAudioProcessor::monoOf (const NaySample& s)
+{
+    const int len = s.data.getNumSamples(), nc = s.data.getNumChannels();
+    std::vector<float> m ((size_t) len, 0.0f);
+    for (int c = 0; c < nc; ++c)
+    {
+        const float* p = s.data.getReadPointer (c);
+        for (int i = 0; i < len; ++i) m[(size_t) i] += p[i] / (float) nc;
+    }
+    return m;
+}
+
+// AUTO LOOP (like a sampler editor):
+//  1) find the SUSTAIN: after the attack and before the sound starts to fade (loudness envelope)
+//  2) inside it, find two upward zero crossings far apart where the waveform shape AND loudness match best
+//  3) set a real crossfade (25% of the loop, 10..150 ms) so vibrato / chorus in the recording doesn't click or jump
+void NayAudioProcessor::autoLoop (NaySample& s)
+{
+    const int len = s.data.getNumSamples();
+    const double fs = s.sampleRate;
+    const auto mono = monoOf (s);
+    const float* x = mono.data();
+    const int W = juce::jmax (256, (int) (fs * 0.008));     // ~8 ms compared on each side
+
+    if (len < (int) (fs * 0.3) || len < 10 * W)
+        return;
+
+    // prefix sum of x^2 -> fast RMS anywhere
+    std::vector<double> ps ((size_t) len + 1, 0.0);
+    for (int i = 0; i < len; ++i) ps[(size_t) i + 1] = ps[(size_t) i] + (double) x[i] * x[i];
+    auto rms = [&] (int c, int n)
+    {
+        const int a = juce::jlimit (0, len, c - n / 2), b = juce::jlimit (0, len, c + n / 2);
+        return std::sqrt ((ps[(size_t) b] - ps[(size_t) a]) / juce::jmax (1, b - a)) + 1.0e-9;
+    };
+
+    // ---- 1) sustain region from the loudness envelope (30 ms windows every 10 ms) ----
+    const int hop = juce::jmax (1, (int) (fs * 0.01)), ew = (int) (fs * 0.03);
+    std::vector<double> env;
+    for (int c = ew / 2; c < len - ew / 2; c += hop) env.push_back (rms (c, ew));
+    if (env.size() < 10)
+        return;
+    const double mx = *std::max_element (env.begin(), env.end());
+    std::vector<double> loud;
+    for (double e : env) if (e >= 0.3 * mx) loud.push_back (e);
+    std::nth_element (loud.begin(), loud.begin() + (long) loud.size() / 2, loud.end());
+    const double ref = loud[loud.size() / 2];                      // typical sustain level
+
+    int f0 = 0, f1 = (int) env.size() - 1;
+    while (f0 < f1 && env[(size_t) f0] < 0.7 * ref) ++f0;          // end of the attack
+    while (f1 > f0 && env[(size_t) f1] < 0.7 * ref) --f1;          // start of the fade-out
+    int sStart = ew / 2 + f0 * hop + (int) (fs * 0.08);
+    int sEnd   = ew / 2 + f1 * hop - (int) (fs * 0.04);
+    if (sEnd - sStart < (int) (fs * 0.3))
+    {   // no clear sustain: use the middle of the sample
+        sStart = (int) (len * 0.25);
+        sEnd = (int) (len * 0.92);
+    }
+    sEnd = juce::jmin (sEnd, len - W - 2);
+    sStart = juce::jmax (sStart, W + 1);
+    const int span = sEnd - sStart;
+    if (span < (int) (fs * 0.15))
+        return;
+
+    std::vector<int> zc;
+    for (int i = sStart; i < sEnd; ++i)
+        if (x[i - 1] <= 0.0f && x[i] > 0.0f)
+            zc.push_back (i);
+    if (zc.size() < 4)
+        return;
+
+    const int lvlWin = (int) (fs * 0.05);
+    auto score = [&] (int a, int e)
+    {
+        double diff = 0.0, en = 1.0e-12;
+        for (int k = -W; k < W; ++k)
+        {
+            const double p = x[a + k], q = x[e + k];
+            diff += (p - q) * (p - q);
+            en += p * p + q * q;
+        }
+        const double lvl = std::abs (std::log (rms (a, lvlWin) / rms (e, lvlWin)));
+        return diff / en + 1.5 * lvl - 0.08 * (double) (e - a) / (double) span;   // prefer longer loops a little
+    };
+
+    // ---- 2) best pair ----
+    const int minLoop = juce::jmin ((int) (span * 0.8), juce::jmax ((int) (fs * 0.3), (int) (span * 0.35)));
+    double bestScore = 1.0e30;
+    int bestA = -1, bestE = -1;
+
+    for (double ef : { 1.0, 0.9, 0.8, 0.7 })
+    {
+        const int target = sStart + (int) (span * ef);
+        auto it = std::upper_bound (zc.begin(), zc.end(), target);
+        if (it == zc.begin())
+            continue;
+        const int e = *(--it);
+
+        std::vector<int> cand;
+        for (int z : zc)
+            if (z <= e - minLoop)
+                cand.push_back (z);
+        if (cand.empty())
+            continue;
+
+        const int stride = juce::jmax (1, (int) cand.size() / 1200);
+        int coarse = -1;
+        double cs = 1.0e30;
+        for (size_t i = 0; i < cand.size(); i += (size_t) stride)
+        {
+            const double sc = score (cand[i], e);
+            if (sc < cs) { cs = sc; coarse = (int) i; }
+        }
+        for (int i = juce::jmax (0, coarse - stride); i <= juce::jmin ((int) cand.size() - 1, coarse + stride); ++i)
+        {
+            const double sc = score (cand[(size_t) i], e);
+            if (sc < bestScore) { bestScore = sc; bestA = cand[(size_t) i]; bestE = e; }
+        }
+    }
+
+    if (bestA >= 0 && bestE - 1 > bestA + 8)
+    {
+        const int loopLen = bestE - bestA;
+        s.loopStart = bestA;
+        s.loopEnd = bestE - 1;     // the engine wraps at loopEnd + 1 = bestE, landing exactly on bestA
+        // ---- 3) crossfade ----
+        const int xf = juce::jlimit ((int) (fs * 0.01), (int) (fs * 0.15), loopLen / 4);
+        s.xfade = juce::jmin (xf, bestA, loopLen / 2);
+    }
+}
+
+//==============================================================================
+std::shared_ptr<NaySample> NayAudioProcessor::cloneSample (const NaySample& s)
+{
+    auto c = std::make_shared<NaySample>();
+    c->fileName = s.fileName;
+    c->sampleRate = s.sampleRate;
+    c->data.makeCopyOf (s.data);
+    c->root = s.root.load(); c->lo = s.lo.load(); c->hi = s.hi.load(); c->vlo = s.vlo.load(); c->vhi = s.vhi.load();
+    c->loopStart = s.loopStart.load(); c->loopEnd = s.loopEnd.load();
+    c->tune = s.tune.load(); c->xfade = s.xfade.load();
+    c->detectInfo = s.detectInfo;
+    return c;
+}
+
+// Wave editor: DELETE / TRIM / FADE IN / FADE OUT / NORMALIZE / SILENCE / REVERSE on the range [start, end)
+std::shared_ptr<NaySample> NayAudioProcessor::applyWaveOp (const NaySample& s, WaveOp op, int start, int end)
+{
+    const int len = s.data.getNumSamples(), nc = s.data.getNumChannels();
+    start = juce::jlimit (0, len, start);
+    end = juce::jlimit (start, len, end);
+    if (op != WaveOp::Normalize && end - start < 2)
+        return nullptr;
+
+    auto c = cloneSample (s);
+    int ls = s.loopStart.load(), le = s.loopEnd.load();
+    const bool hasLoop = ls >= 0 && le > ls;
+
+    if (op == WaveOp::Delete || op == WaveOp::Trim)
+    {
+        const int keepA = op == WaveOp::Trim ? start : 0;
+        const int newLen = op == WaveOp::Trim ? end - start : len - (end - start);
+        if (newLen < 64)
+            return nullptr;
+        juce::AudioBuffer<float> nb (nc, newLen);
+        for (int ch = 0; ch < nc; ++ch)
+        {
+            if (op == WaveOp::Trim)
+                nb.copyFrom (ch, 0, s.data, ch, keepA, newLen);
+            else
+            {
+                if (start > 0)   nb.copyFrom (ch, 0, s.data, ch, 0, start);
+                if (end < len)   nb.copyFrom (ch, start, s.data, ch, end, len - end);
+                // tiny crossfade at the cut so it doesn't click
+                const int fx = juce::jmin (64, start, len - end);
+                for (int k = 0; k < fx; ++k)
+                {
+                    const float t = (float) (k + 1) / (float) (fx + 1);
+                    const float before = s.data.getSample (ch, start - fx + k);
+                    nb.setSample (ch, start - fx + k, before * (1.0f - t) + s.data.getSample (ch, end - fx + k) * t);
+                }
+            }
+        }
+        c->data = std::move (nb);
+
+        if (hasLoop)
+        {
+            if (op == WaveOp::Trim)
+            {
+                ls -= start; le -= start;
+                if (ls < 0 || le >= newLen) ls = le = -1;
+            }
+            else
+            {
+                const int cut = end - start;
+                if (le < start)              { /* loop before the cut: unchanged */ }
+                else if (ls >= end)          { ls -= cut; le -= cut; }
+                else                         ls = le = -1;            // the loop was cut: needs a new one
+            }
+            c->loopStart = ls;
+            c->loopEnd = le;
+            if (ls < 0) c->xfade = -1;
+        }
+        return c;
+    }
+
+    if (op == WaveOp::Normalize && end - start < 2) { start = 0; end = len; }
+    const int n = end - start;
+    for (int ch = 0; ch < nc; ++ch)
+    {
+        float* d = c->data.getWritePointer (ch);
+        switch (op)
+        {
+            case WaveOp::FadeIn:  for (int k = 0; k < n; ++k) d[start + k] *= (float) k / (float) n; break;
+            case WaveOp::FadeOut: for (int k = 0; k < n; ++k) d[start + k] *= 1.0f - (float) (k + 1) / (float) n; break;
+            case WaveOp::Silence: for (int k = 0; k < n; ++k) d[start + k] = 0.0f; break;
+            case WaveOp::Reverse: std::reverse (d + start, d + end); break;
+            default: break;
+        }
+    }
+    if (op == WaveOp::Normalize)
+    {
+        const float pk = c->data.getMagnitude (start, n);
+        if (pk > 1.0e-6f)
+            c->data.applyGain (start, n, juce::Decibels::decibelsToGain (-0.3f) / pk);
+    }
+    return c;
+}
+
+void NayAudioProcessor::replaceSample (int index, int sampleIndex, std::shared_ptr<NaySample> s)
+{
+    if (s == nullptr || index < 0 || index >= (int) groups.size() || groups[(size_t) index].bank == nullptr)
+        return;
+    auto nb = std::make_shared<NayBank> (*groups[(size_t) index].bank);
+    if (sampleIndex < 0 || sampleIndex >= (int) nb->size())
+        return;
+    (*nb)[(size_t) sampleIndex] = s;
+    setBank (index, nb);
+    groups[(size_t) index].dirty = true;
+}
+
+void NayAudioProcessor::startPreview (std::shared_ptr<NaySample> s)
+{
+    {
+        juce::SpinLock::ScopedLockType lock (bankLock);
+        previewReq = std::move (s);
+    }
+    previewCmd = 1;
+    previewOn = true;
+}
+
+void NayAudioProcessor::stopPreview()
+{
+    previewCmd = 2;
+    previewOn = false;
 }
 
 //==============================================================================
@@ -378,13 +919,53 @@ juce::File NayAudioProcessor::userPresetDir()
     return juce::File::getSpecialLocation (juce::File::userDocumentsDirectory).getChildFile ("Egyptian Sampler").getChildFile ("User Presets");
 }
 
-// Sample folders inside the library are stored relative ("@LIB/Stringed/Oud") so presets / projects work on any computer.
+// User instruments: "Egyptian Sampler Data\Instruments" next to the .vst3 (or the Standalone .exe). If Windows does
+// not allow writing there (e.g. C:\Program Files), Documents\Egyptian Sampler\Instruments is used instead.
+juce::File NayAudioProcessor::instrumentsDir()
+{
+    static const juce::File dir = []() -> juce::File
+    {
+        auto canWrite = [] (const juce::File& d)
+        {
+            if (! d.createDirectory().wasOk())
+                return false;
+            const auto t = d.getChildFile (".write_test");
+            const bool ok = t.replaceWithText ("ok");
+            t.deleteFile();
+            return ok;
+        };
+
+        const auto self = juce::File::getSpecialLocation (juce::File::currentApplicationFile);
+        juce::File base = self.getParentDirectory();
+        for (auto d = self; d != d.getParentDirectory(); d = d.getParentDirectory())
+            if (d.isDirectory() && d.getFileName().endsWithIgnoreCase (".vst3"))
+            {
+                base = d.getParentDirectory();
+                break;
+            }
+
+        const auto nextToPlugin = base.getChildFile ("Egyptian Sampler Data").getChildFile ("Instruments");
+        if (canWrite (nextToPlugin))
+            return nextToPlugin;
+
+        auto docs = juce::File::getSpecialLocation (juce::File::userDocumentsDirectory)
+                        .getChildFile ("Egyptian Sampler").getChildFile ("Instruments");
+        docs.createDirectory();
+        return docs;
+    }();
+    return dir;
+}
+
+// Paths are stored relative ("@LIB/Stringed/Oud", "@INST/Nay.esi") so presets / projects work on any computer.
 juce::String NayAudioProcessor::toStoredPath (const juce::String& path)
 {
-    const auto lib = libraryRoot().getFullPathName();
-    const auto prefix = lib + juce::File::getSeparatorString();
-    if (lib.isNotEmpty() && path.startsWith (prefix))
-        return "@LIB/" + path.substring (prefix.length()).replace ("\\", "/");
+    for (const auto& [tag, root] : { std::pair<juce::String, juce::File> { "@LIB/", libraryRoot() },
+                                     std::pair<juce::String, juce::File> { "@INST/", instrumentsDir() } })
+    {
+        const auto prefix = root.getFullPathName() + juce::File::getSeparatorString();
+        if (root.getFullPathName().isNotEmpty() && path.startsWith (prefix))
+            return tag + path.substring (prefix.length()).replace ("\\", "/");
+    }
     return path;
 }
 
@@ -392,7 +973,149 @@ juce::String NayAudioProcessor::fromStoredPath (const juce::String& stored)
 {
     if (stored.startsWith ("@LIB/"))
         return libraryRoot().getChildFile (stored.substring (5)).getFullPathName();
+    if (stored.startsWith ("@INST/"))
+        return instrumentsDir().getChildFile (stored.substring (6)).getFullPathName();
     return stored;
+}
+
+int NayAudioProcessor::scanInstruments (const juce::File& dir)
+{
+    const int before = (int) groups.size();
+    auto files = dir.findChildFiles (juce::File::findFiles, false, "*.esi");
+    std::sort (files.begin(), files.end(), [] (const juce::File& a, const juce::File& b)
+               { return a.getFileName().compareNatural (b.getFileName()) < 0; });
+    for (const auto& f : files)
+    {
+        juce::String name, cat;
+        if (readEsiHeader (f, name, cat))
+            addGroup (name, f.getFullPathName(), cat);
+    }
+    return (int) groups.size() - before;
+}
+
+void NayAudioProcessor::setBank (int index, std::shared_ptr<const NayBank> nb)
+{
+    groups[(size_t) index].bank = nb;
+    juce::SpinLock::ScopedLockType lock (bankLock);
+    if (index == activeGroup) bankA = nb;
+    if (index == duoGroup)    bankB = nb;
+}
+
+int NayAudioProcessor::createInstrument (const juce::String& name)
+{
+    const auto clean = name.trim().isEmpty() ? juce::String ("New Instrument") : name.trim();
+    const auto file = instrumentsDir().getNonexistentChildFile (juce::File::createLegalFileName (clean), ".esi", false);
+
+    NayGroup g;
+    g.name = clean;
+    g.path = file.getFullPathName();
+    g.category = "My Instruments";
+    g.bank = std::make_shared<NayBank>();
+    groups.push_back (std::move (g));
+
+    const int idx = (int) groups.size() - 1;
+    writeEsi (file, clean, "My Instruments", *groups[(size_t) idx].bank);
+    selectGroup (idx);
+    sampleInfo = clean + ": empty - drop WAV files on the mapping";
+    return idx;
+}
+
+// Drag & drop: the audio is COPIED into the instrument file, so the original WAVs can be moved or deleted later.
+// Root note: from the file name when it is a note ("C4", "F#3", "60"), otherwise detected from the sound.
+juce::String NayAudioProcessor::addSamples (const juce::StringArray& paths)
+{
+    juce::Array<juce::File> files;
+    for (const auto& p : paths)
+    {
+        const juce::File f (p);
+        if (f.isDirectory())
+            files.addArray (f.findChildFiles (juce::File::findFiles, true, kAudioWildcard));
+        else if (f.hasFileExtension ("wav;aif;aiff;flac"))
+            files.add (f);
+    }
+    if (files.isEmpty())
+        return "No audio files (WAV / AIFF / FLAC) in the drop";
+
+    int idx = activeGroup;
+    if (! isUserInstrument (idx))
+    {
+        const auto parent = files[0].getParentDirectory().getFileName();
+        idx = createInstrument (parent.isNotEmpty() ? parent : juce::String ("New Instrument"));
+    }
+    ensureLoaded (idx);
+
+    auto nb = std::make_shared<NayBank> (*groups[(size_t) idx].bank);
+    juce::AudioFormatManager fm;
+    fm.registerBasicFormats();
+
+    int added = 0, byName = 0, detected = 0, failed = 0;
+    for (const auto& f : files)
+    {
+        auto s = readAudioFile (f, fm);
+        if (s == nullptr) { ++failed; continue; }
+
+        // unique name inside this instrument (two "C4.wav" from different folders don't overwrite each other)
+        auto nm = s->fileName;
+        for (int k = 2; std::any_of (nb->begin(), nb->end(), [&] (const auto& o) { return o->fileName == nm; }); ++k)
+            nm = f.getFileNameWithoutExtension() + " (" + juce::String (k) + ")" + f.getFileExtension();
+        s->fileName = nm;
+
+        const int r = parseRootNote (f.getFileNameWithoutExtension());
+        if (r >= 0) { s->root = r; s->detectInfo = "from file name"; ++byName; }
+        else        { detectRoot (*s); ++detected; }
+
+        if (s->loopStart.load() < 0)
+            autoLoop (*s);
+
+        nb->push_back (s);
+        ++added;
+    }
+
+    std::sort (nb->begin(), nb->end(), [] (const auto& a, const auto& b) { return a->root.load() < b->root.load(); });
+    autoZones (*nb);
+    setBank (idx, nb);
+
+    auto& g = groups[(size_t) idx];
+    g.dirty = ! writeEsi (juce::File (g.path), g.name, g.category, *nb);
+
+    sampleInfo = g.name + ": " + juce::String ((int) nb->size()) + " samples";
+    juce::String msg = "Added " + juce::String (added) + " sample" + (added == 1 ? "" : "s")
+                     + "  (" + juce::String (byName) + " by name, " + juce::String (detected) + " detected)";
+    if (failed > 0) msg << ",  " << failed << " could not be read";
+    if (g.dirty)    msg << ",  NOT SAVED (cannot write " << g.path << ")";
+    return msg;
+}
+
+bool NayAudioProcessor::saveInstrument (int index)
+{
+    if (index < 0 || index >= (int) groups.size())
+        return false;
+    ensureLoaded (index);
+    auto& g = groups[(size_t) index];
+
+    if (! g.isUser())
+    {   // a folder instrument becomes a user instrument (one file, protected)
+        g.path = instrumentsDir().getNonexistentChildFile (juce::File::createLegalFileName (g.name), ".esi", false).getFullPathName();
+        g.category = "My Instruments";
+    }
+    g.zones.clear();
+    const bool ok = writeEsi (juce::File (g.path), g.name, g.category, *g.bank);
+    g.dirty = ! ok;
+    sampleInfo = g.name + (ok ? ": saved" : ": SAVE FAILED");
+    return ok;
+}
+
+void NayAudioProcessor::removeSample (int index, int sampleIndex)
+{
+    if (index < 0 || index >= (int) groups.size() || groups[(size_t) index].bank == nullptr)
+        return;
+    auto nb = std::make_shared<NayBank> (*groups[(size_t) index].bank);
+    if (sampleIndex < 0 || sampleIndex >= (int) nb->size())
+        return;
+    nb->erase (nb->begin() + sampleIndex);
+    setBank (index, nb);
+    groups[(size_t) index].dirty = true;
+    sampleInfo = groups[(size_t) index].name + ": " + juce::String ((int) nb->size()) + " samples";
 }
 
 // Finds instrument folders. Category = the folder that contains the instrument folders (e.g. "Stringed" > "Oud").
@@ -445,7 +1168,7 @@ void NayAudioProcessor::ensureLoaded (int index)
 {
     auto& g = groups[(size_t) index];
     if (g.bank == nullptr)
-        g.bank = loadBank (juce::File (g.path), g.zones);
+        g.bank = g.isUser() ? loadEsi (juce::File (g.path), g.zones) : loadBank (juce::File (g.path), g.zones);
 }
 
 void NayAudioProcessor::selectGroup (int index)
@@ -487,6 +1210,8 @@ void NayAudioProcessor::renameGroup (int index, const juce::String& newName)
         return;
 
     groups[(size_t) index].name = newName.trim();
+    if (groups[(size_t) index].isUser())
+        saveInstrument (index);     // the name lives inside the .esi file
 
     if (index == activeGroup && groups[(size_t) index].bank != nullptr)
         sampleInfo = groups[(size_t) index].name + ": " + juce::String ((int) groups[(size_t) index].bank->size()) + " samples";
@@ -498,14 +1223,18 @@ void NayAudioProcessor::resetZones (int index)
         return;
 
     groups[(size_t) index].zones.clear();
-    for (const auto& s : *groups[(size_t) index].bank)
-        s->root = 60; // placeholder, re-read from file name below
 
-    // re-parse roots from file names, then recompute zones
+    // re-parse roots from file names (detected roots are kept), then recompute zones
     for (const auto& s : *groups[(size_t) index].bank)
-        s->root = parseRootNote (juce::File (s->fileName).getFileNameWithoutExtension());
+    {
+        const int r = parseRootNote (juce::File (s->fileName).getFileNameWithoutExtension());
+        if (r >= 0)
+            s->root = r;
+    }
 
     autoZones (*groups[(size_t) index].bank);
+    if (groups[(size_t) index].isUser())
+        groups[(size_t) index].dirty = true;
 }
 
 void NayAudioProcessor::syncZones()
@@ -515,7 +1244,8 @@ void NayAudioProcessor::syncZones()
         {
             g.zones.clear();
             for (const auto& s : *g.bank)
-                g.zones.push_back ({ s->fileName, s->root.load(), s->lo.load(), s->hi.load(), s->vlo.load(), s->vhi.load() });
+                g.zones.push_back ({ s->fileName, s->root.load(), s->lo.load(), s->hi.load(), s->vlo.load(), s->vhi.load(),
+                                     s->tune.load(), s->loopStart.load(), s->loopEnd.load(), s->xfade.load() });
         }
 }
 
@@ -597,7 +1327,7 @@ void NayAudioProcessor::applyVelocity (NayVoice& v, int vel)
 
 void NayAudioProcessor::spawnGhost (const NayVoice& v, float releaseSec)
 {
-    if (! v.adsr.isActive() || (v.sa == nullptr && v.sb == nullptr))
+    if (! v.adsr.isActive() || (v.sa == nullptr && v.sb == nullptr && ! pOscOn))
         return;
 
     auto& g = ghosts[(size_t) (ghostIdx++ % (int) ghosts.size())];
@@ -619,18 +1349,22 @@ void NayAudioProcessor::startVoice (NayVoice& v, int note, int vel,
     if (b != nullptr)
         sb = pickSample (b.get(), note, vel, lastPickedB);
 
-    if (sa == nullptr && sb == nullptr)
+    if (sa == nullptr && sb == nullptr && ! pOscOn)
         return;
 
     spawnGhost (v, 0.012f);            // the old sound fades out quickly instead of being cut (no click)
+    v.oscPh = 0.0;
+    v.oscLp = 0.0f;
+    v.oscTri = 0.0f;
     v.adsr.reset();
     v.xf = 1.0f;
     v.xfStep = 0.0f;
     v.sa = sa;
     v.sb = sb;
     v.posA = v.posB = 0.0;
-    v.lp = 0.0f;
-    v.lpB = 0.0f;
+    v.lp = v.lpR = 0.0f;
+    v.lpB = v.lpBR = 0.0f;
+    v.preview = false;
     v.note = note;
     v.target = noteTarget (note);
     v.pitch = v.target;
@@ -682,7 +1416,7 @@ void NayAudioProcessor::handleMidi (const juce::MidiMessage& msg,
             auto& v = voices[0];
             const bool magicOn = getP (P_portaOn) > 0.5f;
             const bool recent = magicOn && v.adsr.isActive() && gapMs < 150.0;   // fast key after key still counts as legato
-            if (pLegato && (wasHeld || recent) && v.adsr.isActive() && (v.sa != nullptr || v.sb != nullptr))
+            if (pLegato && (wasHeld || recent) && v.adsr.isActive() && (v.sa != nullptr || v.sb != nullptr || pOscOn))
             {
                 // legato: no retrigger, just glide
                 v.note = n;
@@ -714,7 +1448,7 @@ void NayAudioProcessor::handleMidi (const juce::MidiMessage& msg,
                         v.sa = sa2;
                         v.sb = sb2;
                         v.posA = v.posB = 0.0;
-                        v.lp = v.lpB = 0.0f;
+                        v.lp = v.lpB = v.lpR = v.lpBR = 0.0f;
                         v.pitch = v.target;
                         v.glideMs = 0.0f;
                         v.xf = 0.0f;
@@ -803,53 +1537,71 @@ void NayAudioProcessor::handleMidi (const juce::MidiMessage& msg,
 //==============================================================================
 void NayAudioProcessor::renderVoice (NayVoice& v, juce::AudioBuffer<float>& buf, int start, int num)
 {
-    if (num <= 0 || (v.sa == nullptr && v.sb == nullptr) || ! v.adsr.isActive())
+    const bool oscHere = pOscOn && ! v.preview;            // the oscillator never plays in the wave-editor preview
+    const bool solo = pOscOnly && ! v.preview;             // oscillator SOLO: the samples are silent
+    if (num <= 0 || (v.sa == nullptr && v.sb == nullptr && ! oscHere) || ! v.adsr.isActive())
         return;
 
     NaySample* ss[2] = { v.sa.get(), v.sb.get() };
     double* pos[2] = { &v.posA, &v.posB };
-    const float lg[2] = { 1.0f, 1.0f };
 
-    const float* src[2] = { nullptr, nullptr };
+    const float* src[2][2] = { { nullptr, nullptr }, { nullptr, nullptr } };   // [layer][L/R] (mono sample: R = L)
     double lEnd[2] = { 0, 0 }, lStart[2] = { 0, 0 }, rateBase[2] = { 0, 0 }, xfl[2] = { 0, 0 };
-    bool act[2] = { false, false };
+    bool act[2] = { false, false }, eqPow[2] = { false, false };
 
     for (int k = 0; k < 2; ++k)
     {
-        if (ss[k] == nullptr || ss[k]->data.getNumSamples() < 4)
+        if (solo || ss[k] == nullptr || ss[k]->data.getNumSamples() < 4)
             continue;
 
         const int len = ss[k]->data.getNumSamples();
-        src[k] = ss[k]->data.getReadPointer (0);
+        src[k][0] = ss[k]->data.getReadPointer (0);
+        src[k][1] = ss[k]->data.getReadPointer (ss[k]->data.getNumChannels() > 1 ? 1 : 0);
         lEnd[k] = (double) len - 1.0;
         lStart[k] = juce::jmin (lEnd[k] - 1.0, (double) len * 0.5); // default sustain loop = second half
-        if (ss[k]->loopStart >= 0)                                   // loop points saved inside the WAV
+        const int ls = ss[k]->loopStart.load(), le = ss[k]->loopEnd.load();
+        if (ls >= 0 && le > ls + 8 && le < len)                      // loop from the WAV, AUTO LOOP or set by hand
         {
-            lStart[k] = (double) ss[k]->loopStart;
-            lEnd[k] = juce::jmin ((double) (ss[k]->loopEnd + 1), (double) len - 1.0);
+            lStart[k] = (double) ls;
+            lEnd[k] = juce::jmin ((double) (le + 1), (double) len - 1.0);
         }
-        // short equal-power style cross-fade at the loop point (no click)
-        xfl[k] = juce::jmax (0.0, juce::jmin (1024.0, juce::jmin ((lEnd[k] - lStart[k]) * 0.4, lStart[k])));
-        rateBase[k] = (ss[k]->sampleRate / sr) * std::exp2 (-(double) ss[k]->root.load() / 12.0);
+        // loop crossfade: the sample's own length (AUTO LOOP / wave editor) or a short automatic one
+        const double loopLen = lEnd[k] - lStart[k];
+        const int xs = ss[k]->xfade.load();
+        xfl[k] = xs >= 0 ? (double) xs : juce::jmin (1024.0, loopLen * 0.4);
+        xfl[k] = juce::jmax (0.0, juce::jmin (xfl[k], loopLen * 0.5, lStart[k]));
+        eqPow[k] = xfl[k] > ss[k]->sampleRate * 0.03;                 // long fades: equal power (vibrato / chorus)
+        // per-sample TUNE (cents) shifts the sample's own pitch
+        rateBase[k] = (ss[k]->sampleRate / sr) * std::exp2 (-((double) ss[k]->root.load() - (double) ss[k]->tune.load() * 0.01) / 12.0);
         act[k] = true;
     }
 
-    if (! act[0] && ! act[1])
+    if (! act[0] && ! act[1] && ! oscHere)
         return;
+
+    // oscillator channel (PolyBLEP saw / square, triangle from the square, sine)
+    const float oscLpA = 1.0f - std::exp (-juce::MathConstants<float>::twoPi * juce::jmin (pOscCut, 0.45f * (float) sr) / (float) sr);
+    auto polyBlep = [] (double t, double dt) -> double
+    {
+        if (t < dt)       { t /= dt; return t + t - t * t - 1.0; }
+        if (t > 1.0 - dt) { t = (t - 1.0) / dt; return t * t + t + t + 1.0; }
+        return 0.0;
+    };
 
     float* L = buf.getWritePointer (0, start);
     float* R = buf.getNumChannels() > 1 ? buf.getWritePointer (1, start) : nullptr;
 
+    const float gAL = v.preview ? 1.0f : mixAL, gAR = v.preview ? 1.0f : mixAR;
     const float gt = getP (P_portaOn) > 0.5f ? juce::jmax (0.0f, v.glideMs) : pGlide;   // MAGIC LEGATO replaces the GLIDE knob
     const double glideCoef = gt < 1.0f ? 1.0 : 1.0 - std::exp (-1.0 / ((double) gt * 0.001 * sr));
-    const double depthCents = juce::jmin (100.0, (double) pVibDepth * (double) modWheel);   // vibrato only through the mod wheel; VIB DEPTH = amount at full wheel
-    const double bendSemis = (double) bendNorm * (double) pPbRange;
+    const double depthCents = v.preview ? 0.0 : juce::jmin (100.0, (double) pVibDepth * (double) modWheel);   // vibrato only through the mod wheel
+    const double bendSemis = v.preview ? 0.0 : (double) bendNorm * (double) pPbRange;
     const float lpA = 1.0f - std::exp (-juce::MathConstants<float>::twoPi * juce::jmin (v.velFc * (0.2f + 0.8f * exprSm), 0.45f * (float) sr) / (float) sr);
 
-    float es = exprSm;
+    float es = v.preview ? 1.0f : exprSm;
     for (int i = 0; i < num; ++i)
     {
-        es += (expr - es) * 0.003f;
+        if (! v.preview) es += (expr - es) * 0.003f;
         v.pitch += (v.target - v.pitch) * glideCoef;
 
         v.vibPhase += (double) pVibRate / sr;
@@ -859,7 +1611,7 @@ void NayAudioProcessor::renderVoice (NayVoice& v, juce::AudioBuffer<float>& buf,
 
         const double ratio = std::exp2 ((v.pitch + bendSemis + vib + (double) v.detune) / 12.0);
 
-        float mA = 0.0f, mB = 0.0f;
+        float m[2][2] = { { 0.0f, 0.0f }, { 0.0f, 0.0f } };
         for (int k = 0; k < 2; ++k)
         {
             if (! act[k])
@@ -871,35 +1623,72 @@ void NayAudioProcessor::renderVoice (NayVoice& v, juce::AudioBuffer<float>& buf,
 
             const int i0 = (int) p;
             const float frac = (float) (p - (double) i0);
-            float smp = (src[k][i0] + frac * (src[k][i0 + 1] - src[k][i0])) * lg[k];
-            if (xfl[k] > 1.0 && p > lEnd[k] - xfl[k])
+            const bool inFade = xfl[k] > 1.0 && p > lEnd[k] - xfl[k];
+            float ga = 1.0f, gb = 0.0f;
+            int j0 = 0;
+            float jf = 0.0f;
+            if (inFade)
             {
-                const double q = p - (lEnd[k] - lStart[k]);          // same spot one loop earlier
-                const int j0 = (int) q;
-                const float jf = (float) (q - (double) j0);
-                const float s2 = (src[k][j0] + jf * (src[k][j0 + 1] - src[k][j0])) * lg[k];
+                const double q = p - (lEnd[k] - lStart[k]);          // same spot one loop earlier (just before the loop start)
+                j0 = (int) q;
+                jf = (float) (q - (double) j0);
                 const float t = (float) ((p - (lEnd[k] - xfl[k])) / xfl[k]);
-                smp = smp * (1.0f - t) + s2 * t;   // linear: the two signals are the same waveform one loop apart
+                if (eqPow[k]) { ga = std::cos (t * 1.5707963f); gb = std::sin (t * 1.5707963f); }
+                else          { ga = 1.0f - t; gb = t; }
             }
-            if (k == 0) mA = smp; else mB = smp;
+            for (int c = 0; c < 2; ++c)
+            {
+                const float* d = src[k][c];
+                float smp = d[i0] + frac * (d[i0 + 1] - d[i0]);
+                if (inFade)
+                    smp = smp * ga + (d[j0] + jf * (d[j0 + 1] - d[j0])) * gb;
+                m[k][c] = smp;
+            }
 
             p += ratio * rateBase[k];
         }
 
-        v.lp  += lpA * (mA - v.lp);
-        v.lpB += lpA * (mB - v.lpB);
+        float osc = 0.0f;
+        if (oscHere)
+        {
+            const double f = 440.0 * std::exp2 ((v.pitch + bendSemis + vib + (double) v.detune + (double) pOscSemis - 69.0) / 12.0);
+            const double dt = juce::jlimit (1.0e-6, 0.49, f / sr);
+            const double t = v.oscPh;
+            double w = 0.0;
+            switch (pOscWave)
+            {
+                case 0:  w = std::sin (juce::MathConstants<double>::twoPi * t); break;
+                case 1:  w = 2.0 * t - 1.0 - polyBlep (t, dt); break;
+                default:
+                {
+                    double sq = (t < 0.5 ? 1.0 : -1.0) + polyBlep (t, dt) - polyBlep (std::fmod (t + 0.5, 1.0), dt);
+                    if (pOscWave == 3)
+                    {   // leaky integration of the square = band-limited triangle
+                        v.oscTri = (float) (dt * 4.0 * sq + (1.0 - dt * 0.05) * (double) v.oscTri);
+                        sq = (double) v.oscTri;
+                    }
+                    w = sq;
+                    break;
+                }
+            }
+            v.oscPh += dt;
+            if (v.oscPh >= 1.0) v.oscPh -= 1.0;
+            v.oscLp += oscLpA * ((float) w - v.oscLp);
+            osc = v.oscLp * pOscGain;
+        }
+
+        v.lp   += lpA * (m[0][0] - v.lp);
+        v.lpR  += lpA * (m[0][1] - v.lpR);
+        v.lpB  += lpA * (m[1][0] - v.lpB);
+        v.lpBR += lpA * (m[1][1] - v.lpBR);
         if (v.xf < 1.0f)
             v.xf = juce::jmin (1.0f, v.xf + v.xfStep);
         const float env = v.adsr.getNextSample() * v.xf * v.velGain * pGain * std::pow (es, 1.5f);
-        const float oa = v.lp * env, ob = v.lpB * env;
+        const float outL = (v.lp * gAL + v.lpB * mixBL + osc * mixOL) * env;
+        const float outR = (v.lpR * gAR + v.lpBR * mixBR + osc * mixOR) * env;
 
-        if (R != nullptr)
-        {
-            L[i] += oa * mixAL + ob * mixBL;
-            R[i] += oa * mixAR + ob * mixBR;
-        }
-        else
-            L[i] += oa * 0.5f * (mixAL + mixAR) + ob * 0.5f * (mixBL + mixBR);
+        if (R != nullptr) { L[i] += outL; R[i] += outR; }
+        else              L[i] += 0.5f * (outL + outR);
 
         if (! v.adsr.isActive())
             break;
@@ -919,6 +1708,8 @@ void NayAudioProcessor::renderAll (juce::AudioBuffer<float>& buf, int start, int
 
     for (auto& g : ghosts)
         renderVoice (g, buf, start, num);
+
+    renderVoice (previewVoice, buf, start, num);
 
     exprSm += (expr - exprSm) * (1.0f - std::pow (0.997f, (float) num));
 }
@@ -1379,6 +2170,12 @@ void NayAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     pPhOn = getP (P_phOn) > 0.5f;     pPhRate = getP (P_phRate);      pPhDepth = getP (P_phDepth);  pPhMix = getP (P_phMix);
     pArpOn = getP (P_arpOn) > 0.5f;  pArpMode = (int) getP (P_arpMode);  pArpRate = (int) getP (P_arpRate);
     pArpOct = (int) getP (P_arpOct); pArpGate = getP (P_arpGate);        pArpHold = getP (P_arpHold) > 0.5f;
+    pOscOn    = getP (P_oscOn) > 0.5f;
+    pOscOnly  = pOscOn && getP (P_oscOnly) > 0.5f;
+    pOscWave  = juce::jlimit (0, 3, (int) getP (P_oscWave));
+    pOscGain  = dbToGainOrOff (getP (P_oscLevel)) * (pOscWave == 0 || pOscWave == 3 ? 0.5f : 0.35f);
+    pOscSemis = getP (P_oscTune) + getP (P_oscFine) * 0.01f;
+    pOscCut   = getP (P_oscCut);
 
     // fine-tune per note (the microtonal keys)
     for (int i = 0; i < 12; ++i)
@@ -1397,7 +2194,47 @@ void NayAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
         float l, r;
         panGains (getP (P_mainPan), l, r);  mixAL = gA * l;  mixAR = gA * r;
         panGains (getP (P_duoPan),  l, r);  mixBL = gB * l;  mixBR = gB * r;
+        const float gO = getP (P_oscMute) > 0.5f ? 0.0f : 1.0f;      // level is inside pOscGain
+        panGains (getP (P_oscPan),  l, r);  mixOL = gO * l;  mixOR = gO * r;
+        if (pOscOnly) { mixAL = mixAR = mixBL = mixBR = 0.0f; }      // SOLO: only the oscillator channel
         pMaster = dbToGainOrOff (getP (P_master));
+    }
+
+    // wave editor PLAY / STOP
+    if (const int cmd = previewCmd.exchange (0))
+    {
+        auto& pv = previewVoice;
+        if (cmd == 1)
+        {
+            std::shared_ptr<NaySample> req;
+            {
+                juce::SpinLock::ScopedLockType lock (bankLock);
+                req = previewReq;
+            }
+            if (req != nullptr)
+            {
+                spawnGhost (pv, 0.01f);
+                pv.sa = req; pv.sb = nullptr;
+                pv.preview = true;
+                pv.posA = 0.0;
+                pv.lp = pv.lpR = pv.lpB = pv.lpBR = 0.0f;
+                pv.note = req->root.load();
+                pv.target = pv.pitch = (double) pv.note;
+                pv.detune = 0.0f; pv.glideMs = 0.0f;
+                pv.xf = 1.0f; pv.xfStep = 0.0f;
+                pv.velGain = 1.0f; pv.velFc = 20000.0f;
+                pv.adsr.setSampleRate (sr);
+                pv.adsr.setParameters ({ 0.002f, 0.05f, 1.0f, 0.08f });
+                pv.adsr.reset();
+                pv.adsr.noteOn();
+                pv.gate = true;
+            }
+        }
+        else
+        {
+            pv.gate = false;
+            pv.adsr.noteOff();
+        }
     }
 
     if (pMono != lastMono)
@@ -1573,6 +2410,10 @@ juce::ValueTree NayAudioProcessor::buildState()
             zt.setProperty ("hi", z.hi, nullptr);
             zt.setProperty ("vlo", z.vlo, nullptr);
             zt.setProperty ("vhi", z.vhi, nullptr);
+            zt.setProperty ("tune", z.tune, nullptr);
+            zt.setProperty ("ls", z.ls, nullptr);
+            zt.setProperty ("le", z.le, nullptr);
+            zt.setProperty ("xf", z.xf, nullptr);
             c.appendChild (zt, nullptr);
         }
         gs.appendChild (c, nullptr);
@@ -1642,10 +2483,14 @@ void NayAudioProcessor::applyState (const juce::ValueTree& st)
                 auto zt = c.getChild (k);
                 g.zones.push_back ({ zt.getProperty ("file").toString(), (int) zt.getProperty ("root", 60),
                                      (int) zt.getProperty ("lo", 0), (int) zt.getProperty ("hi", 127),
-                                     (int) zt.getProperty ("vlo", 1), (int) zt.getProperty ("vhi", 127) });
+                                     (int) zt.getProperty ("vlo", 1), (int) zt.getProperty ("vhi", 127),
+                                     (float) zt.getProperty ("tune", 0.0f),
+                                     (int) zt.getProperty ("ls", -2), (int) zt.getProperty ("le", -2),
+                                     (int) zt.getProperty ("xf", -2) });
             }
             groups.push_back (std::move (g));
         }
+        scanInstruments (instrumentsDir());   // user instruments made after this project / preset was saved
 
         const int a = (int) gs.getProperty ("active", -1);
         if (a >= 0 && a < (int) groups.size())

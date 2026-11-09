@@ -14,12 +14,18 @@ struct NaySample
     double sampleRate = 44100.0;
     juce::AudioBuffer<float> data;
     std::atomic<int> root { 60 }, lo { 0 }, hi { 127 }, vlo { 1 }, vhi { 127 };
-    int loopStart = -1, loopEnd = -1;      // loop points read from the WAV 'smpl' chunk (-1 = none)
+    std::atomic<int> loopStart { -1 }, loopEnd { -1 };   // sustain loop (WAV 'smpl' chunk, AUTO LOOP or by hand; -1 = default)
+    std::atomic<float> tune { 0.0f };                     // per-sample fine tune in cents (+ = higher)
+    std::atomic<int> xfade { -1 };                        // loop crossfade length in samples (-1 = automatic short fade)
+    juce::String detectInfo;                              // how the root note was found (shown in the mapping page)
 };
 
 using NayBank = std::vector<std::shared_ptr<NaySample>>;
 
-struct NayZoneOv { juce::String file; int root = 60, lo = 0, hi = 127, vlo = 1, vhi = 127; };
+struct NayZoneOv { juce::String file; int root = 60, lo = 0, hi = 127, vlo = 1, vhi = 127; float tune = 0.0f; int ls = -2, le = -2, xf = -2; };   // -2 = keep the file's value
+
+// Wave editor operations (each one returns a NEW sample, so the audio thread never sees a half-edited buffer)
+enum class WaveOp { Delete, Trim, FadeIn, FadeOut, Normalize, Silence, Reverse };
 
 // An "instrument": a named folder of samples.
 struct NayGroup
@@ -29,6 +35,8 @@ struct NayGroup
     std::shared_ptr<const NayBank> bank;  // loaded lazily
     std::vector<NayZoneOv> zones;         // saved zone overrides
     juce::String category;                // e.g. "Stringed", "Flutes" (folder that contains the instrument folder)
+    bool dirty = false;                   // user instrument (.esi) changed since the last save
+    bool isUser() const { return path.endsWithIgnoreCase (".esi"); }
 };
 
 struct NayVoice
@@ -38,7 +46,10 @@ struct NayVoice
     double posA = 0.0, posB = 0.0, pitch = 60.0, target = 60.0, vibPhase = 0.0;
     float detune = 0.f;
     float xf = 1.0f, xfStep = 0.0f;   // crossfade-in of a replaced sample (MAGIC LEGATO)
-    float velGain = 1.0f, velFc = 18000.f, lp = 0.f, lpB = 0.f, glideMs = -1.f;   // glideMs < 0 = use the PORTAMENTO TIME knob
+    float velGain = 1.0f, velFc = 18000.f, lp = 0.f, lpB = 0.f, lpR = 0.f, lpBR = 0.f, glideMs = -1.f;   // glideMs < 0 = use the PORTAMENTO TIME knob
+    bool preview = false;                 // wave-editor audition voice (no oscillator, plays at the root note)
+    double oscPh = 0.0;                   // oscillator layer phase (0..1)
+    float oscLp = 0.f, oscTri = 0.f;      // oscillator low-pass / triangle integrator state
     int note = -1;
     bool gate = false;
     juce::uint64 age = 0;
@@ -58,6 +69,7 @@ enum NayParam
     P_mainLevel, P_mainPan, P_mainMute, P_duoLevel, P_duoPan, P_duoMute, P_master, P_varOn, P_satTone, P_satBass,
     P_yamOn, P_yamMix, P_yamDrive, P_yamWah, P_yamTone,
     P_tuneBypass, P_yamShine, P_portaOn, P_fastThr, P_fastTime, P_vSens, P_vRef, P_minTime, P_velLo, P_velHi, P_tDepth, P_tOff, P_magicTime, P_kCut, P_kRes,
+    P_oscOn, P_oscOnly, P_oscWave, P_oscLevel, P_oscTune, P_oscFine, P_oscCut, P_oscPan, P_oscMute,
     P_count
 };
 
@@ -166,6 +178,26 @@ public:
     }
     juce::String getSampleInfo() const { return sampleInfo; }
 
+    // ---- user instruments (.esi = one file per instrument: all samples + mapping + tuning + loops) ----
+    static juce::File instrumentsDir();                           // "Egyptian Sampler Data\Instruments" next to the plugin (or Documents if not writable)
+    bool isUserInstrument (int i) const { return i >= 0 && i < (int) groups.size() && groups[(size_t) i].isUser(); }
+    bool isDirty (int i) const { return i >= 0 && i < (int) groups.size() && groups[(size_t) i].dirty; }
+    void markDirty (int i) { if (i >= 0 && i < (int) groups.size()) groups[(size_t) i].dirty = true; }
+    juce::String getGroupPath (int i) const { return i >= 0 && i < (int) groups.size() ? groups[(size_t) i].path : juce::String(); }
+    int createInstrument (const juce::String& name);              // new empty instrument, selected; returns its index
+    juce::String addSamples (const juce::StringArray& files);     // drag & drop: copies the audio into the active user instrument
+    bool saveInstrument (int index);                              // writes the .esi (a folder instrument becomes a user instrument)
+    void removeSample (int groupIndex, int sampleIndex);
+    static void detectRoot (NaySample&);                          // pitch detection -> root + tune
+    static void autoLoop (NaySample&);                            // finds a smooth sustain loop + crossfade
+    static std::vector<float> monoOf (const NaySample&);          // L+R mix (analysis)
+    static std::shared_ptr<NaySample> cloneSample (const NaySample&);
+    static std::shared_ptr<NaySample> applyWaveOp (const NaySample&, WaveOp op, int start, int end);
+    void replaceSample (int groupIndex, int sampleIndex, std::shared_ptr<NaySample> s);
+    void startPreview (std::shared_ptr<NaySample> s);             // wave editor PLAY
+    void stopPreview();
+    bool isPreviewing() const { return previewOn.load(); }
+
     // presets (message thread)
     bool savePreset (const juce::String& name);                 // into the User folder
     bool loadPreset (const juce::File& file);
@@ -206,6 +238,13 @@ private:
     static int parseRootNote (const juce::String& fileName);
     static bool folderHasSamples (const juce::File& folder);
     static std::shared_ptr<const NayBank> loadBank (const juce::File& folder, const std::vector<NayZoneOv>& ov);
+    static std::shared_ptr<const NayBank> loadEsi (const juce::File& file, const std::vector<NayZoneOv>& ov);
+    static bool readEsiHeader (const juce::File& file, juce::String& name, juce::String& category);
+    static bool writeEsi (const juce::File& file, const juce::String& name, const juce::String& category, const NayBank& bank);
+    static std::shared_ptr<NaySample> readAudioFile (const juce::File& f, juce::AudioFormatManager& fm);
+    static void applyOverrides (const NayBank& b, const std::vector<NayZoneOv>& ov);
+    void setBank (int index, std::shared_ptr<const NayBank> nb);
+    int scanInstruments (const juce::File& dir);
     static void autoZones (const NayBank& b);
     std::shared_ptr<NaySample> pickSample (const NayBank* b, int note, int vel, NaySample*& last);
     static juce::String toStoredPath (const juce::String&);
@@ -255,6 +294,14 @@ private:
     float pSatDrive = 0.4f, pSatMix = 0.6f;
     float pWahPos = 0.5f, pWahRate = 0.f, pWahMix = 1.f;
     float pPhRate = 0.5f, pPhDepth = 0.6f, pPhMix = 0.7f;
+    bool pOscOn = false, pOscOnly = false;
+    int pOscWave = 1;
+    float pOscGain = 0.25f, pOscSemis = 0.0f, pOscCut = 18000.f, mixOL = 1.f, mixOR = 1.f;
+    // wave editor audition
+    NayVoice previewVoice;
+    std::shared_ptr<NaySample> previewReq;
+    std::atomic<int> previewCmd { 0 };                    // 1 = start previewReq, 2 = stop
+    std::atomic<bool> previewOn { false };
     float off[12] {}; // effective per-note fine tune in cents (user + maqam)
 
     // voices (mono mode uses voices[0] only)

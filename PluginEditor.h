@@ -6,19 +6,23 @@
 #include <memory>
 #include <vector>
 
-// Egyptian palette (names kept from the first version): turquoise, carnelian, lapis, papyrus green, gold.
+// Monumental Anubis palette: near-black + gold everywhere, light turquoise only for LEDs / meters, carnelian for alerts.
+// (the old accent names are kept so every control keeps working; they all map to golds now)
 namespace neon
 {
-    const juce::Colour bg0     { 0xff070b14 };
-    const juce::Colour bg1     { 0xff15233a };
-    const juce::Colour panel   { 0xff0d1626 };
-    const juce::Colour cyan    { 0xff2fe0c4 };   // turquoise
-    const juce::Colour magenta { 0xffe2573f };   // carnelian
-    const juce::Colour violet  { 0xff4a86ff };   // lapis
-    const juce::Colour green   { 0xffa6d84f };   // papyrus
-    const juce::Colour amber   { 0xffe3a93f };   // gold
-    const juce::Colour dim     { 0xff9fa9bd };
-    const juce::Colour text    { 0xfff1e2c0 };
+    const juce::Colour bg0     { 0xff050403 };   // charcoal black
+    const juce::Colour bg1     { 0xff15100a };
+    const juce::Colour panel   { 0xff0b0906 };
+    const juce::Colour gold    { 0xffe9b947 };
+    const juce::Colour bronze  { 0xff6b430c };
+    const juce::Colour led     { 0xff5fe8ff };   // LEDs, meters, indicator dots
+    const juce::Colour cyan    { 0xffe9b947 };   // gold
+    const juce::Colour magenta { 0xffe2573f };   // carnelian (alerts, MAGIC LEGATO, reset / mute)
+    const juce::Colour violet  { 0xffc49a45 };   // antique gold
+    const juce::Colour green   { 0xfff2d27a };   // pale gold
+    const juce::Colour amber   { 0xffe9b947 };   // gold
+    const juce::Colour dim     { 0xff8c7d66 };   // warm stone grey
+    const juce::Colour text    { 0xfff3e2b8 };
 }
 
 class NeonLookAndFeel : public juce::LookAndFeel_V4
@@ -77,7 +81,8 @@ private:
 };
 
 // Kontakt-style mapping editor: key range (x) x velocity range (y) for each sample of a layer.
-class MapView : public juce::Component
+// Drop WAV files (or folders) on it to build an instrument. Bottom: waveform with the loop points.
+class MapView : public juce::Component, public juce::FileDragAndDropTarget
 {
 public:
     explicit MapView (NayAudioProcessor&);
@@ -89,7 +94,33 @@ public:
     void mouseDrag (const juce::MouseEvent&) override;
     void mouseMove (const juce::MouseEvent&) override;
 
+    bool isInterestedInFileDrag (const juce::StringArray&) override { return true; }
+    void fileDragEnter (const juce::StringArray&, int, int) override { dropHover = true; repaint(); }
+    void fileDragExit (const juce::StringArray&) override { dropHover = false; repaint(); }
+    void filesDropped (const juce::StringArray& files, int, int) override;
+
+    std::function<void (const juce::String&)> onChanged;   // instrument changed (message for the info box)
+    std::function<void (int)> onEditWave;                  // open the wave editor on this sample
+    void mouseDoubleClick (const juce::MouseEvent&) override;
+
 private:
+    juce::TextButton addFilesBtn { "ADD FILES" }, editBtn { "EDIT WAVE" };
+    std::unique_ptr<juce::FileChooser> chooser;
+    void edited();                                          // marks the instrument as changed
+    void paintWave (juce::Graphics&, const NaySample&);
+    int sampleToX (const NaySample&, int pos) const;
+    int xToSample (const NaySample&, float x) const;
+    NaySample* selectedSample() const;
+    juce::Rectangle<int> waveRect;
+    juce::TextButton detectBtn { "DETECT NOTE" }, loopBtn { "AUTO LOOP" }, delBtn { "DELETE SAMPLE" };
+    juce::Slider tuneSlider;
+    juce::Label tuneLabel;
+    bool dropHover = false;
+    int loopDrag = 0;                                       // 1 = loop start marker, 2 = loop end marker
+    std::vector<float> waveMin, waveMax;
+    const NaySample* waveFor = nullptr;
+    int waveW = 0;
+
     enum Edge { eL = 1, eR = 2, eT = 4, eB = 8 };
 
     std::shared_ptr<const NayBank> currentBank() const;
@@ -123,6 +154,65 @@ public:
     void paintListBoxItem (int row, juce::Graphics& g, int w, int hgt, bool selected) override;
     void selectedRowsChanged (int lastRowSelected) override { if (onSelect && lastRowSelected >= 0) onSelect (lastRowSelected); }
     void listBoxItemDoubleClicked (int row, const juce::MouseEvent&) override { if (onDouble) onDouble (row); }
+};
+
+// Wave editor (Wave Extreme style): sample list, zoomable waveform, selection, DELETE / TRIM / FADE / NORMALIZE,
+// loop markers + crossfade, AUTO LOOP, UNDO and PLAY (audition) - all on the active instrument.
+class WaveEditor : public juce::Component, private juce::ScrollBar::Listener
+{
+public:
+    explicit WaveEditor (NayAudioProcessor&);
+    ~WaveEditor() override;
+
+    void open (int sampleIndex);
+    void paint (juce::Graphics&) override;
+    void resized() override;
+    void mouseDown (const juce::MouseEvent&) override;
+    void mouseDrag (const juce::MouseEvent&) override;
+    void mouseUp (const juce::MouseEvent&) override;
+    void mouseMove (const juce::MouseEvent&) override;
+    void mouseDoubleClick (const juce::MouseEvent&) override;
+    void mouseWheelMove (const juce::MouseEvent&, const juce::MouseWheelDetails&) override;
+
+    std::function<void()> onClose;
+    std::function<void (const juce::String&)> onChanged;
+
+private:
+    void scrollBarMoved (juce::ScrollBar*, double newRangeStart) override;
+    std::shared_ptr<NaySample> current() const;
+    void selectRow (int i);
+    void doOp (WaveOp op);
+    void pushUndo();
+    void edited (const juce::String& msg);
+    void setView (double start, double len);
+    void updateControls();
+    int xToPos (float x) const;
+    float posToX (double p) const;
+    void loopBounds (const NaySample&, int& ls, int& le) const;
+    int snapZero (const NaySample&, int pos) const;
+
+    NayAudioProcessor& proc;
+    int group = -1, idx = -1;
+    int selA = -1, selB = -1, dragMode = 0;
+    double viewStart = 0.0, viewLen = 1.0;
+    std::vector<std::pair<int, std::shared_ptr<NaySample>>> undo;    // (sample index, previous sample)
+
+    LambdaListModel listModel;
+    juce::ListBox list;
+    juce::TextButton backBtn { "BACK" }, playBtn { "PLAY" }, undoBtn { "UNDO" }, saveBtn { "SAVE" },
+                     zoomSelBtn { "ZOOM SEL" }, zoomAllBtn { "ZOOM ALL" },
+                     delBtn { "DELETE" }, trimBtn { "TRIM" }, silBtn { "SILENCE" }, finBtn { "FADE IN" }, foutBtn { "FADE OUT" },
+                     normBtn { "NORMALIZE" }, revBtn { "REVERSE" },
+                     loopSelBtn { "LOOP = SELECTION" }, autoLoopBtn { "AUTO LOOP" }, clearLoopBtn { "NO LOOP (DEFAULT)" };
+    juce::Slider xfSlider;
+    juce::Label xfLabel;
+    juce::ScrollBar hbar { false };
+    juce::Rectangle<int> waveArea, statusArea;
+
+    std::vector<float> cMin, cMax;               // drawing cache
+    const NaySample* cFor = nullptr;
+    double cStart = -1.0, cLen = -1.0;
+    int cW = 0;
 };
 
 class NayAudioProcessorEditor : public juce::AudioProcessorEditor, private juce::Timer
@@ -182,6 +272,7 @@ private:
 
     Page page, settings, browse, mixer, voiceEd;       // main / settings (folders, mapping) / browse / mixer
     MapView mapView;
+    WaveEditor waveEd;
     juce::TextButton mapButton { "SETTINGS" }, browseButton { "BROWSE" }, mixerButton { "MIXER" }, voiceButton { "VOICE" };
     int view = 0;
 
@@ -231,7 +322,12 @@ private:
     void recallScale (int slot);
     juce::ShapeButton prevD { "prevD", neon::amber, neon::amber.brighter (0.4f), neon::amber.darker (0.3f) };
     juce::ShapeButton nextD { "nextD", neon::amber, neon::amber.brighter (0.4f), neon::amber.darker (0.3f) };
-    juce::TextButton addButton { "ADD FOLDER" };
+    juce::TextButton addButton { "ADD FOLDER" }, newInstBtn { "NEW INSTRUMENT" }, saveInstBtn { "SAVE INSTRUMENT" };
+    // oscillator panel (main page)
+    juce::ToggleButton *tOscOn {}, *tOscOnly {}, *tOscSoloMix {}, *tOscMuteMix {}, *tOscOnMix {};
+    Knob *kOscLvl {}, *kOscTune {}, *kOscFine {}, *kOscCut {}, *kOscFader {}, *kOscPan {};
+    juce::ComboBox oscWaveBox;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> oscWaveAtt;
     juce::Label info;
     std::unique_ptr<juce::FileChooser> chooser;
 

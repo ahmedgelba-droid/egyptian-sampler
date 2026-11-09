@@ -13,65 +13,127 @@ static juce::String noteName (int n)
     return juce::String (kNames[n % 12]) + juce::String (n / 12 - 1);
 }
 
+static void drawAnubis (juce::Graphics& g, float x, float y, float h, float alpha, bool eye);
+
+// chamfered (cut-corner) rectangle used by panels, buttons, LCDs
+static juce::Path chamfer (juce::Rectangle<float> r, float c)
+{
+    c = juce::jmin (c, r.getWidth() * 0.5f, r.getHeight() * 0.5f);
+    juce::Path p;
+    p.startNewSubPath (r.getX() + c, r.getY());
+    p.lineTo (r.getRight() - c, r.getY());
+    p.lineTo (r.getRight(), r.getY() + c);
+    p.lineTo (r.getRight(), r.getBottom() - c);
+    p.lineTo (r.getRight() - c, r.getBottom());
+    p.lineTo (r.getX() + c, r.getBottom());
+    p.lineTo (r.getX(), r.getBottom() - c);
+    p.lineTo (r.getX(), r.getY() + c);
+    p.closeSubPath();
+    return p;
+}
+
+static void drawDiamond (juce::Graphics& g, float cx, float cy, float s, juce::Colour c)
+{
+    juce::Path d;
+    d.startNewSubPath (cx, cy - s);
+    d.lineTo (cx + s, cy);
+    d.lineTo (cx, cy + s);
+    d.lineTo (cx - s, cy);
+    d.closeSubPath();
+    g.setColour (c);
+    g.fillPath (d);
+}
+
+static void ledDot (juce::Graphics& g, juce::Rectangle<float> r, bool on)
+{
+    if (on)
+    {
+        g.setColour (neon::led.withAlpha (0.25f));
+        g.fillEllipse (r.expanded (r.getWidth() * 0.6f));
+        g.setColour (neon::led.withAlpha (0.45f));
+        g.fillEllipse (r.expanded (r.getWidth() * 0.25f));
+        g.setColour (neon::led);
+    }
+    else
+        g.setColour (juce::Colour (0xff17323a));
+    g.fillEllipse (r);
+}
+
 //==============================================================================
 NeonLookAndFeel::NeonLookAndFeel()
 {
-    setColour (juce::PopupMenu::backgroundColourId, juce::Colour (0xff0d1626));
+    setColour (juce::PopupMenu::backgroundColourId, juce::Colour (0xff0b0906));
     setColour (juce::PopupMenu::textColourId, neon::text);
-    setColour (juce::PopupMenu::highlightedBackgroundColourId, neon::cyan.withAlpha (0.25f));
-    setColour (juce::PopupMenu::highlightedTextColourId, juce::Colours::white);
+    setColour (juce::PopupMenu::headerTextColourId, neon::gold);
+    setColour (juce::PopupMenu::highlightedBackgroundColourId, neon::gold.withAlpha (0.22f));
+    setColour (juce::PopupMenu::highlightedTextColourId, juce::Colour (0xfffff3d0));
     setColour (juce::ComboBox::textColourId, neon::text);
-    setColour (juce::TextButton::textColourOffId, neon::text);
-    setColour (juce::TextButton::textColourOnId, juce::Colours::white);
-    setColour (juce::AlertWindow::backgroundColourId, juce::Colour (0xff0d1626));
+    setColour (juce::ComboBox::backgroundColourId, juce::Colour (0xff070504));
+    setColour (juce::TextButton::textColourOffId, neon::gold);
+    setColour (juce::TextButton::textColourOnId, juce::Colour (0xff1a1004));   // dark text on the gold fill
+    setColour (juce::AlertWindow::backgroundColourId, juce::Colour (0xff0b0906));
     setColour (juce::AlertWindow::textColourId, neon::text);
-    setColour (juce::TextEditor::backgroundColourId, juce::Colour (0xff070c16));
+    setColour (juce::AlertWindow::outlineColourId, neon::gold);
+    setColour (juce::TextEditor::backgroundColourId, juce::Colour (0xff070504));
     setColour (juce::TextEditor::textColourId, neon::text);
+    setColour (juce::TextEditor::outlineColourId, neon::bronze);
+    setColour (juce::TextEditor::focusedOutlineColourId, neon::gold);
+    setColour (juce::Label::textColourId, neon::text);
+    setColour (juce::ScrollBar::thumbColourId, neon::gold.withAlpha (0.6f));
+    setColour (juce::ListBox::backgroundColourId, juce::Colour (0xcc0b0906));
+    setColour (juce::Slider::textBoxTextColourId, neon::text);
 }
 
-juce::Font NeonLookAndFeel::getComboBoxFont (juce::ComboBox&) { return uiFont (13.0f); }
-juce::Font NeonLookAndFeel::getTextButtonFont (juce::TextButton&, int) { return uiFont (12.0f); }
+juce::Font NeonLookAndFeel::getComboBoxFont (juce::ComboBox&) { return uiFont (12.5f).withExtraKerningFactor (0.06f); }
+juce::Font NeonLookAndFeel::getTextButtonFont (juce::TextButton&, int) { return uiFont (11.5f).withExtraKerningFactor (0.16f); }
 
+// knob: black centre, metallic gold ring, tick marks, light-gold pointer, turquoise value dot
 void NeonLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int w, int h, float pos,
                                         float a0, float a1, juce::Slider& s)
 {
-    const auto accent = s.findColour (juce::Slider::rotarySliderFillColourId);
-    auto b = juce::Rectangle<float> ((float) x, (float) y, (float) w, (float) h).reduced (3.0f);
+    const bool enabled = s.isEnabled();
+    auto b = juce::Rectangle<float> ((float) x, (float) y, (float) w, (float) h).reduced (2.0f);
     const float r = juce::jmin (b.getWidth(), b.getHeight()) * 0.5f;
     const auto c = b.getCentre();
     const float ang = a0 + pos * (a1 - a0);
+    const float alpha = enabled ? 1.0f : 0.35f;
 
-    juce::Path track;
-    track.addCentredArc (c.x, c.y, r - 2.0f, r - 2.0f, 0.0f, a0, a1, true);
-    g.setColour (juce::Colours::white.withAlpha (0.09f));
-    g.strokePath (track, juce::PathStrokeType (3.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    // tick marks around the ring
+    for (int i = 0; i <= 10; ++i)
+    {
+        const float ta = a0 + (a1 - a0) * (float) i / 10.0f;
+        const float r0 = r - 1.0f, r1 = r - (i % 5 == 0 ? 6.0f : 4.0f);
+        g.setColour (neon::gold.withAlpha ((i % 5 == 0 ? 0.75f : 0.4f) * alpha));
+        g.drawLine (c.x + std::sin (ta) * r1, c.y - std::cos (ta) * r1, c.x + std::sin (ta) * r0, c.y - std::cos (ta) * r0, 1.2f);
+    }
 
-    juce::Path val;
-    val.addCentredArc (c.x, c.y, r - 2.0f, r - 2.0f, 0.0f, a0, ang, true);
-    g.setColour (accent.withAlpha (0.16f));
-    g.strokePath (val, juce::PathStrokeType (9.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-    g.setColour (accent.withAlpha (0.35f));
-    g.strokePath (val, juce::PathStrokeType (5.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
-    g.setColour (accent);
-    g.strokePath (val, juce::PathStrokeType (2.4f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    // soft gold glow + metallic ring
+    const float rr = r - 7.0f;
+    g.setColour (neon::gold.withAlpha (0.10f * alpha));
+    g.fillEllipse (c.x - rr - 3.0f, c.y - rr - 3.0f, (rr + 3.0f) * 2.0f, (rr + 3.0f) * 2.0f);
+    juce::ColourGradient ring (juce::Colour (0xfffbe7a6).withAlpha (alpha), c.x - rr, c.y - rr,
+                               juce::Colour (0xff6b430c).withAlpha (alpha), c.x + rr, c.y + rr, false);
+    ring.addColour (0.5, juce::Colour (0xffd8a43a).withAlpha (alpha));
+    g.setGradientFill (ring);
+    g.fillEllipse (c.x - rr, c.y - rr, rr * 2.0f, rr * 2.0f);
 
-    // gold bezel + dark stone-like cap (NileVerb style)
-    const float bz = r - 5.0f;
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xfff2c866), c.x - bz * 0.6f, c.y - bz * 0.8f,
-                                             juce::Colour (0xff7a4a16), c.x + bz * 0.6f, c.y + bz * 0.9f, false));
-    g.fillEllipse (c.x - bz, c.y - bz, bz * 2.0f, bz * 2.0f);
-    const float br = r - 8.5f;
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff3c4352), c.x - br * 0.5f, c.y - br * 0.7f,
-                                             juce::Colour (0xff0b1018), c.x + br * 0.6f, c.y + br, false));
+    // black centre
+    const float br = rr - 3.6f;
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff1d160d), c.x, c.y - br, juce::Colour (0xff030201), c.x, c.y + br, false));
     g.fillEllipse (c.x - br, c.y - br, br * 2.0f, br * 2.0f);
-    g.setColour (juce::Colour (0xff1a1209).withAlpha (0.8f));
+    g.setColour (juce::Colours::black.withAlpha (0.8f));
     g.drawEllipse (c.x - br, c.y - br, br * 2.0f, br * 2.0f, 1.0f);
 
+    // light-gold pointer
     juce::Path p;
-    p.addRoundedRectangle (-1.6f, -br + 2.5f, 3.2f, br * 0.5f, 1.5f);
+    p.addRoundedRectangle (-1.5f, -br + 2.0f, 3.0f, br * 0.62f, 1.4f);
     p.applyTransform (juce::AffineTransform::rotation (ang).translated (c.x, c.y));
-    g.setColour (juce::Colour (0xfff2c866));
+    g.setColour (juce::Colour (0xfffbe7a6).withAlpha (alpha));
     g.fillPath (p);
+
+    // turquoise value dot on the ring
+    if (enabled)
+        ledDot (g, juce::Rectangle<float> (3.6f, 3.6f).withCentre ({ c.x + std::sin (ang) * (rr + 2.5f), c.y - std::cos (ang) * (rr + 2.5f) }), true);
 }
 
 void NeonLookAndFeel::drawLinearSlider (juce::Graphics& g, int x, int y, int w, int h, float pos, float minPos, float maxPos,
@@ -79,115 +141,148 @@ void NeonLookAndFeel::drawLinearSlider (juce::Graphics& g, int x, int y, int w, 
 {
     if (style != juce::Slider::LinearVertical)
     {
-        juce::LookAndFeel_V4::drawLinearSlider (g, x, y, w, h, pos, minPos, maxPos, style, s);
+        // horizontal: dark groove, gold fill, gold thumb
+        const float cy = (float) y + (float) h * 0.5f;
+        juce::Rectangle<float> groove ((float) x, cy - 2.5f, (float) w, 5.0f);
+        g.setColour (juce::Colour (0xff050302));
+        g.fillRoundedRectangle (groove, 2.5f);
+        g.setColour (neon::bronze);
+        g.drawRoundedRectangle (groove, 2.5f, 1.0f);
+        const float px = juce::jlimit ((float) x, (float) (x + w), pos);
+        const float from = s.getMinimum() < 0.0 && s.getMaximum() > 0.0 ? (float) s.valueToProportionOfLength (0.0) * (float) w + (float) x : (float) x;
+        g.setColour (neon::gold.withAlpha (s.isEnabled() ? 0.85f : 0.3f));
+        g.fillRect (juce::jmin (from, px), cy - 1.5f, std::abs (px - from), 3.0f);
+        juce::Rectangle<float> th (px - 6.0f, cy - 9.0f, 12.0f, 18.0f);
+        g.setGradientFill (juce::ColourGradient (juce::Colour (0xfffbe7a6), 0.0f, th.getY(), juce::Colour (0xff8a5b16), 0.0f, th.getBottom(), false));
+        g.fillPath (chamfer (th, 3.0f));
+        g.setColour (juce::Colour (0xff2b1807));
+        g.strokePath (chamfer (th, 3.0f), juce::PathStrokeType (1.0f));
         return;
     }
 
-    const auto accent = s.findColour (juce::Slider::trackColourId);
     const float cx = (float) x + (float) w * 0.5f;
     const float top = (float) y + 12.0f, bot = (float) y + (float) h - 12.0f;
 
-    // scale ticks
-    g.setColour (neon::dim.withAlpha (0.55f));
+    g.setColour (neon::gold.withAlpha (0.35f));
     for (int i = 0; i <= 10; ++i)
     {
         const float ty = bot - (bot - top) * (float) i / 10.0f;
-        const float len = (i % 5 == 0) ? 12.0f : 7.0f;
-        g.drawLine (cx - 20.0f - len, ty, cx - 20.0f, ty, 1.0f);
-        g.drawLine (cx + 20.0f, ty, cx + 20.0f + len, ty, 1.0f);
+        const float len = (i % 5 == 0) ? 10.0f : 6.0f;
+        g.drawLine (cx - 19.0f - len, ty, cx - 19.0f, ty, 1.0f);
+        g.drawLine (cx + 19.0f, ty, cx + 19.0f + len, ty, 1.0f);
     }
 
-    // groove
     juce::Rectangle<float> groove (cx - 5.0f, top - 4.0f, 10.0f, bot - top + 8.0f);
-    g.setColour (juce::Colour (0xff02050a));
-    g.fillRoundedRectangle (groove, 5.0f);
-    g.setColour (juce::Colour (0xffb8863a));
-    g.drawRoundedRectangle (groove, 5.0f, 1.5f);
+    g.setColour (juce::Colour (0xff030201));
+    g.fillRoundedRectangle (groove, 4.0f);
+    g.setColour (neon::bronze.brighter (0.3f));
+    g.drawRoundedRectangle (groove, 4.0f, 1.2f);
 
     const float py = juce::jlimit (top, bot, pos);
-    juce::Rectangle<float> fill (cx - 3.0f, py, 6.0f, bot - py + 2.0f);
-    g.setColour (accent.withAlpha (0.30f));
+    juce::Rectangle<float> fill (cx - 2.5f, py, 5.0f, bot - py + 2.0f);
+    g.setColour (neon::led.withAlpha (0.25f));
     g.fillRoundedRectangle (fill.expanded (3.0f, 0.0f), 4.0f);
-    g.setColour (accent);
-    g.fillRoundedRectangle (fill, 3.0f);
+    g.setColour (neon::led);
+    g.fillRoundedRectangle (fill, 2.5f);
 
-    // gold fader cap
-    juce::Rectangle<float> cap (cx - 21.0f, py - 12.0f, 42.0f, 24.0f);
+    // gold fader cap (chamfered)
+    juce::Rectangle<float> cap (cx - 20.0f, py - 11.0f, 40.0f, 22.0f);
     g.setColour (juce::Colours::black.withAlpha (0.6f));
-    g.fillRoundedRectangle (cap.translated (0.0f, 2.5f), 5.0f);
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xfff5d884), cap.getX(), cap.getY(),
-                                             juce::Colour (0xff6e4a14), cap.getX(), cap.getBottom(), false));
-    g.fillRoundedRectangle (cap, 5.0f);
+    g.fillPath (chamfer (cap.translated (0.0f, 2.5f), 4.0f));
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xfffbe7a6), cap.getX(), cap.getY(),
+                                             juce::Colour (0xff6b430c), cap.getX(), cap.getBottom(), false));
+    g.fillPath (chamfer (cap, 4.0f));
     g.setColour (juce::Colour (0xff2b1807));
-    g.drawRoundedRectangle (cap, 5.0f, 1.2f);
-    g.setColour (juce::Colour (0xff2b1807));
-    g.fillRect (cap.getX() + 5.0f, cap.getCentreY() - 1.0f, cap.getWidth() - 10.0f, 2.0f);
-    g.setColour (accent);
-    g.fillRect (cap.getX() + 5.0f, cap.getCentreY() + 2.0f, cap.getWidth() - 10.0f, 1.5f);
+    g.strokePath (chamfer (cap, 4.0f), juce::PathStrokeType (1.2f));
+    g.fillRect (cap.getX() + 6.0f, cap.getCentreY() - 1.0f, cap.getWidth() - 12.0f, 2.0f);
 }
 
 void NeonLookAndFeel::drawToggleButton (juce::Graphics& g, juce::ToggleButton& b, bool hl, bool)
 {
-    const auto accent = b.findColour (juce::ToggleButton::tickColourId);
     const bool on = b.getToggleState();
-    auto r = b.getLocalBounds().toFloat().reduced (1.5f);
+    const bool magic = b.getButtonText().containsIgnoreCase ("MAGIC");
+    const auto edge = magic ? neon::magenta : neon::gold;
+    auto r = b.getLocalBounds().toFloat().reduced (2.0f);
+    const auto shape = chamfer (r, 6.0f);
 
-    g.setColour (on ? accent.withAlpha (0.16f) : juce::Colours::white.withAlpha (hl ? 0.08f : 0.04f));
-    g.fillRoundedRectangle (r, 6.0f);
-
-    if (on)
-    {
-        g.setColour (accent.withAlpha (0.25f));
-        g.drawRoundedRectangle (r.expanded (1.5f), 7.0f, 3.0f);
+    g.setColour (juce::Colour (0xff070504).withAlpha (0.9f));
+    g.fillPath (shape);
+    if (magic)
+    {   // carnelian glow so MAGIC LEGATO stands out
+        g.setColour (neon::magenta.withAlpha (on ? 0.45f : 0.2f));
+        g.strokePath (chamfer (r.expanded (2.0f), 7.0f), juce::PathStrokeType (on ? 4.0f : 2.5f));
+        g.setColour (neon::magenta.withAlpha (on ? 0.25f : 0.08f));
+        g.fillPath (shape);
     }
-    g.setColour (on ? accent : neon::dim.withAlpha (0.7f));
-    g.drawRoundedRectangle (r, 6.0f, 1.2f);
+    else if (on || hl)
+    {
+        g.setColour (neon::gold.withAlpha (on ? 0.22f : 0.1f));
+        g.strokePath (chamfer (r.expanded (1.5f), 7.0f), juce::PathStrokeType (3.0f));
+    }
+    g.setColour (edge.withAlpha (on || magic ? 1.0f : 0.55f));
+    g.strokePath (shape, juce::PathStrokeType (1.3f));
 
+    // square LED (turquoise)
     const float ls = 8.0f;
-    juce::Rectangle<float> led (r.getX() + 9.0f, r.getCentreY() - ls * 0.5f, ls, ls);
+    juce::Rectangle<float> led (r.getX() + 10.0f, r.getCentreY() - ls * 0.5f, ls, ls);
     if (on)
     {
-        g.setColour (accent.withAlpha (0.35f));
-        g.fillEllipse (led.expanded (3.0f));
+        g.setColour ((magic ? neon::magenta : neon::led).withAlpha (0.35f));
+        g.fillRoundedRectangle (led.expanded (3.0f), 3.0f);
     }
-    g.setColour (on ? accent : neon::dim.darker (0.5f));
-    g.fillEllipse (led);
+    g.setColour (on ? (magic ? juce::Colour (0xffff8a6a) : neon::led) : juce::Colour (0xff17323a));
+    g.fillRoundedRectangle (led, 1.5f);
 
-    g.setColour (on ? neon::text : neon::dim);
-    g.setFont (uiFont (12.5f));
-    g.drawText (b.getButtonText(), r.withTrimmedLeft (24.0f).toNearestInt(), juce::Justification::centredLeft, true);
+    g.setColour (magic ? juce::Colour (0xffffb09a) : (on ? neon::text : neon::gold.withAlpha (0.7f)));
+    g.setFont (uiFont (11.5f).withExtraKerningFactor (0.14f));
+    g.drawText (b.getButtonText(), r.withTrimmedLeft (26.0f).toNearestInt(), juce::Justification::centredLeft, true);
 }
 
 void NeonLookAndFeel::drawButtonBackground (juce::Graphics& g, juce::Button& b, const juce::Colour&, bool hl, bool down)
 {
     const auto accent = b.findColour (juce::TextButton::buttonColourId);
+    const bool alert = accent == neon::magenta;
     auto r = b.getLocalBounds().toFloat().reduced (1.5f);
     const bool on = b.getToggleState();
+    const auto shape = chamfer (r, juce::jmin (7.0f, r.getHeight() * 0.3f));
 
-    g.setColour (accent.withAlpha (on ? 0.28f : (down ? 0.3f : (hl ? 0.16f : 0.07f))));
-    g.fillRoundedRectangle (r, 6.0f);
-    if (on || hl)
-    {
-        g.setColour (accent.withAlpha (0.22f));
-        g.drawRoundedRectangle (r.expanded (1.5f), 7.0f, 3.0f);
+    if (on || down)
+    {   // active = gold fill
+        g.setColour (neon::gold.withAlpha (0.25f));
+        g.strokePath (chamfer (r.expanded (2.0f), 8.0f), juce::PathStrokeType (3.5f));
+        g.setGradientFill (juce::ColourGradient (juce::Colour (0xfffbe1a0), 0.0f, r.getY(), juce::Colour (0xffb7832a), 0.0f, r.getBottom(), false));
+        g.fillPath (shape);
+        g.setColour (juce::Colour (0xff3a2408));
+        g.strokePath (shape, juce::PathStrokeType (1.2f));
+        return;
     }
-    g.setColour (accent.withAlpha (on ? 1.0f : 0.75f));
-    g.drawRoundedRectangle (r, 6.0f, 1.2f);
+
+    g.setColour (juce::Colour (0xff070504).withAlpha (0.92f));
+    g.fillPath (shape);
+    if (hl)
+    {
+        g.setColour (neon::gold.withAlpha (0.14f));
+        g.fillPath (shape);
+    }
+    g.setColour ((alert ? neon::magenta : neon::gold).withAlpha (b.isEnabled() ? 0.95f : 0.3f));
+    g.strokePath (shape, juce::PathStrokeType (1.4f));
+    g.setColour (neon::bronze.withAlpha (0.8f));
+    g.strokePath (chamfer (r.reduced (3.0f), juce::jmin (5.0f, r.getHeight() * 0.25f)), juce::PathStrokeType (0.8f));
 }
 
-void NeonLookAndFeel::drawComboBox (juce::Graphics& g, int w, int h, bool, int, int, int, int, juce::ComboBox& box)
+void NeonLookAndFeel::drawComboBox (juce::Graphics& g, int w, int h, bool, int, int, int, int, juce::ComboBox&)
 {
     auto r = juce::Rectangle<float> (0.0f, 0.0f, (float) w, (float) h).reduced (1.0f);
-    const auto accent = box.findColour (juce::ComboBox::outlineColourId);
-    g.setColour (juce::Colour (0xff070c16));
-    g.fillRoundedRectangle (r, 6.0f);
-    g.setColour (accent.withAlpha (0.85f));
-    g.drawRoundedRectangle (r, 6.0f, 1.2f);
+    const auto shape = chamfer (r, 6.0f);
+    g.setColour (juce::Colour (0xff070504));
+    g.fillPath (shape);
+    g.setColour (neon::gold.withAlpha (0.9f));
+    g.strokePath (shape, juce::PathStrokeType (1.3f));
 
     juce::Path arrow;
     const float ax = (float) w - 16.0f, ay = (float) h * 0.5f;
     arrow.addTriangle (ax - 4.5f, ay - 2.5f, ax + 4.5f, ay - 2.5f, ax, ay + 3.5f);
-    g.setColour (accent);
+    g.setColour (neon::gold);
     g.fillPath (arrow);
 }
 
@@ -215,6 +310,8 @@ MapView::MapView (NayAudioProcessor& p) : proc (p)
         proc.resetZones (proc.getActiveGroup());
         selected = -1;
         refresh();
+        if (onChanged)
+            onChanged ("Zones reset to automatic");
     };
     addAndMakeVisible (resetBtn);
 
@@ -232,10 +329,96 @@ MapView::MapView (NayAudioProcessor& p) : proc (p)
         if (bank != nullptr && selected >= 0 && selected < (int) bank->size())
         {
             (*bank)[(size_t) selected]->root = (int) rootSlider.getValue();
+            edited();
             repaint();
         }
     };
     addAndMakeVisible (rootSlider);
+
+    tuneSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    tuneSlider.setRange (-100.0, 100.0, 1.0);
+    tuneSlider.setDoubleClickReturnValue (true, 0.0);
+    tuneSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 60, 24);
+    tuneSlider.setColour (juce::Slider::thumbColourId, neon::amber);
+    tuneSlider.setColour (juce::Slider::trackColourId, neon::amber.withAlpha (0.5f));
+    tuneSlider.setColour (juce::Slider::textBoxTextColourId, neon::text);
+    tuneSlider.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
+    tuneSlider.textFromValueFunction = [] (double v) { return (v > 0 ? "+" : "") + juce::String ((int) v) + " ct"; };
+    tuneSlider.valueFromTextFunction = [] (const juce::String& t) { return t.retainCharacters ("-0123456789").getDoubleValue(); };
+    tuneSlider.onValueChange = [this]
+    {
+        if (auto* s = selectedSample())
+        {
+            s->tune = (float) tuneSlider.getValue();
+            edited();
+        }
+    };
+    addAndMakeVisible (tuneSlider);
+    tuneLabel.setText ("TUNE", juce::dontSendNotification);
+    tuneLabel.setFont (uiFont (11.5f));
+    tuneLabel.setColour (juce::Label::textColourId, neon::dim);
+    addAndMakeVisible (tuneLabel);
+
+    detectBtn.setColour (juce::TextButton::buttonColourId, neon::cyan);
+    detectBtn.onClick = [this]
+    {
+        if (auto* s = selectedSample())
+        {
+            NayAudioProcessor::detectRoot (*s);
+            edited();
+            selectSample (selected);
+        }
+    };
+    loopBtn.setColour (juce::TextButton::buttonColourId, neon::green);
+    loopBtn.onClick = [this]
+    {
+        if (auto* s = selectedSample())
+        {
+            const int before = s->loopStart.load();
+            NayAudioProcessor::autoLoop (*s);
+            edited();
+            if (onChanged)
+                onChanged (s->loopStart.load() >= 0 && s->loopStart.load() != before ? "AUTO LOOP: new loop found - play the key to hear it"
+                                                                                      : "AUTO LOOP: kept the current loop (sample too short or no better point)");
+            repaint();
+        }
+    };
+    delBtn.setColour (juce::TextButton::buttonColourId, neon::magenta);
+    delBtn.onClick = [this]
+    {
+        if (selectedSample() == nullptr)
+            return;
+        proc.removeSample (proc.getActiveGroup(), selected);
+        selected = -1;
+        refresh();
+        if (onChanged)
+            onChanged ("Sample deleted - press SAVE INSTRUMENT to keep it");
+    };
+    for (auto* b : { &detectBtn, &loopBtn, &delBtn })
+        addAndMakeVisible (*b);
+
+    // ADD FILES: the same as drag & drop, through a file browser (multi-select)
+    addFilesBtn.setColour (juce::TextButton::buttonColourId, neon::amber);
+    addFilesBtn.onClick = [this]
+    {
+        chooser = std::make_unique<juce::FileChooser> ("Add samples to the instrument", juce::File(), "*.wav;*.aif;*.aiff;*.flac");
+        juce::Component::SafePointer<MapView> safe (this);
+        chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles
+                                | juce::FileBrowserComponent::canSelectMultipleItems,
+                              [safe] (const juce::FileChooser& fc)
+                              {
+                                  if (safe == nullptr || fc.getResults().isEmpty())
+                                      return;
+                                  juce::StringArray paths;
+                                  for (const auto& f : fc.getResults())
+                                      paths.add (f.getFullPathName());
+                                  safe->filesDropped (paths, 0, 0);
+                              });
+    };
+    editBtn.setColour (juce::TextButton::buttonColourId, neon::violet);
+    editBtn.onClick = [this] { if (onEditWave) onEditWave (juce::jmax (0, selected)); };
+    addAndMakeVisible (addFilesBtn);
+    addAndMakeVisible (editBtn);
 
     rootLabel.setText ("ROOT KEY", juce::dontSendNotification);
     rootLabel.setFont (uiFont (11.5f));
@@ -270,31 +453,152 @@ void MapView::selectSample (int i)
     {
         const auto& s = *(*bank)[(size_t) i];
         rootSlider.setValue (s.root.load(), juce::dontSendNotification);
-        fileLabel.setText (s.fileName, juce::dontSendNotification);
-        rootSlider.setEnabled (true);
+        tuneSlider.setValue (s.tune.load(), juce::dontSendNotification);
+        fileLabel.setText (s.fileName + (s.detectInfo.isNotEmpty() ? "   (" + s.detectInfo + ")" : juce::String()), juce::dontSendNotification);
+        for (juce::Component* c : { (juce::Component*) &rootSlider, (juce::Component*) &tuneSlider, (juce::Component*) &detectBtn,
+                                    (juce::Component*) &loopBtn, (juce::Component*) &delBtn })
+            c->setEnabled (true);
     }
     else
     {
         selected = -1;
-        fileLabel.setText ("Click a zone. Drag to move, drag its edges to resize.", juce::dontSendNotification);
-        rootSlider.setEnabled (false);
+        fileLabel.setText (bank != nullptr && ! bank->empty() ? "Click a zone. Drag to move, drag its edges to resize."
+                                                              : "Drop WAV files (or a folder) here to build an instrument.",
+                           juce::dontSendNotification);
+        for (juce::Component* c : { (juce::Component*) &rootSlider, (juce::Component*) &tuneSlider, (juce::Component*) &detectBtn,
+                                    (juce::Component*) &loopBtn, (juce::Component*) &delBtn })
+            c->setEnabled (false);
     }
+    delBtn.setEnabled (selected >= 0 && proc.isUserInstrument (proc.getActiveGroup()));
     repaint();
+}
+
+NaySample* MapView::selectedSample() const
+{
+    auto bank = currentBank();
+    if (bank == nullptr || selected < 0 || selected >= (int) bank->size())
+        return nullptr;
+    return (*bank)[(size_t) selected].get();
+}
+
+void MapView::edited()
+{
+    proc.markDirty (proc.getActiveGroup());
+    if (auto* p = getParentComponent())
+        p->repaint();
+}
+
+void MapView::mouseDoubleClick (const juce::MouseEvent& e)
+{
+    int edges = 0;
+    const int i = hitTest (e.position, edges);
+    if (i >= 0 && onEditWave)
+        onEditWave (i);
+}
+
+void MapView::filesDropped (const juce::StringArray& files, int, int)
+{
+    dropHover = false;
+    juce::MouseCursor::showWaitCursor();
+    const auto msg = proc.addSamples (files);
+    juce::MouseCursor::hideWaitCursor();
+    selected = -1;
+    refresh();
+    if (onChanged)
+        onChanged (msg);
 }
 
 void MapView::resized()
 {
     auto a = getLocalBounds().reduced (14);
-    resetBtn.setBounds (a.getRight() - 140, a.getY(), 140, 28);
+    {
+        auto top = juce::Rectangle<int> (a.getX(), a.getY(), a.getWidth(), 28);
+        resetBtn.setBounds (top.removeFromRight (112));   top.removeFromRight (6);
+        delBtn.setBounds (top.removeFromRight (118));     top.removeFromRight (6);
+        loopBtn.setBounds (top.removeFromRight (96));     top.removeFromRight (6);
+        detectBtn.setBounds (top.removeFromRight (108));  top.removeFromRight (6);
+        editBtn.setBounds (top.removeFromRight (100));    top.removeFromRight (6);
+        addFilesBtn.setBounds (top.removeFromRight (100));
+    }
 
-    const int bottomRowH = 32;
-    const int bottom = a.getBottom() - bottomRowH;
-    keyStrip = { a.getX() + 34, bottom - 6 - 34, a.getWidth() - 34, 34 };
+    waveRect = { a.getX() + 34, a.getBottom() - 150, a.getWidth() - 34, 150 };
+    const int rowY = waveRect.getY() - 6 - 26;
+    keyStrip = { a.getX() + 34, rowY - 6 - 34, a.getWidth() - 34, 34 };
     grid = { keyStrip.getX(), a.getY() + 40, keyStrip.getWidth(), keyStrip.getY() - 2 - (a.getY() + 40) };
 
-    fileLabel.setBounds (a.getX(), bottom + 4, 380, 26);
-    rootLabel.setBounds (a.getX() + 400, bottom + 4, 80, 26);
-    rootSlider.setBounds (a.getX() + 480, bottom + 4, 360, 26);
+    fileLabel.setBounds (a.getX(), rowY, 330, 26);
+    rootLabel.setBounds (a.getX() + 340, rowY, 70, 26);
+    rootSlider.setBounds (a.getX() + 410, rowY, 230, 26);
+    tuneLabel.setBounds (a.getX() + 652, rowY, 46, 26);
+    tuneSlider.setBounds (a.getX() + 700, rowY, a.getWidth() - 700, 26);
+    waveFor = nullptr;
+}
+
+int MapView::sampleToX (const NaySample& s, int pos) const
+{
+    const int len = juce::jmax (1, s.data.getNumSamples());
+    return waveRect.getX() + (int) ((double) pos / len * waveRect.getWidth());
+}
+
+int MapView::xToSample (const NaySample& s, float x) const
+{
+    const int len = s.data.getNumSamples();
+    return juce::jlimit (0, juce::jmax (0, len - 1), (int) ((double) (x - (float) waveRect.getX()) / waveRect.getWidth() * len));
+}
+
+void MapView::paintWave (juce::Graphics& g, const NaySample& s)
+{
+    const int len = s.data.getNumSamples();
+    const int w = waveRect.getWidth();
+    if (waveFor != &s || waveW != w)
+    {
+        waveFor = &s;
+        waveW = w;
+        waveMin.assign ((size_t) w, 0.0f);
+        waveMax.assign ((size_t) w, 0.0f);
+        const float* x = s.data.getReadPointer (0);
+        for (int px = 0; px < w; ++px)
+        {
+            const int a = (int) ((juce::int64) px * len / w), b = juce::jmax (a + 1, (int) ((juce::int64) (px + 1) * len / w));
+            float mn = 0.0f, mx = 0.0f;
+            for (int i = a; i < b && i < len; ++i) { mn = juce::jmin (mn, x[i]); mx = juce::jmax (mx, x[i]); }
+            waveMin[(size_t) px] = mn;
+            waveMax[(size_t) px] = mx;
+        }
+    }
+
+    float peak = 0.001f;
+    for (int px = 0; px < w; ++px) peak = juce::jmax (peak, -waveMin[(size_t) px], waveMax[(size_t) px]);
+    const float cy = (float) waveRect.getCentreY(), hh = (float) waveRect.getHeight() * 0.46f / peak;
+
+    int ls = s.loopStart.load(), le = s.loopEnd.load();
+    const bool own = ls >= 0 && le > ls + 8 && le < len;
+    if (! own) { ls = len / 2; le = len - 2; }   // the engine's default loop (second half)
+
+    const int x0 = sampleToX (s, ls), x1 = sampleToX (s, le + 1);
+    g.setColour (neon::green.withAlpha (own ? 0.16f : 0.07f));
+    g.fillRect (x0, waveRect.getY(), juce::jmax (1, x1 - x0), waveRect.getHeight());
+
+    g.setColour (neon::cyan.withAlpha (0.85f));
+    for (int px = 0; px < w; ++px)
+        g.fillRect ((float) (waveRect.getX() + px), cy - waveMax[(size_t) px] * hh, 1.0f,
+                    juce::jmax (1.0f, (waveMax[(size_t) px] - waveMin[(size_t) px]) * hh));
+
+    for (int k = 0; k < 2; ++k)
+    {
+        const int mx = k == 0 ? x0 : x1;
+        g.setColour (own ? neon::green : neon::dim);
+        g.fillRect (mx - 1, waveRect.getY(), 2, waveRect.getHeight());
+        juce::Path tri;
+        tri.addTriangle ((float) mx - 6.0f, (float) waveRect.getY(), (float) mx + 6.0f, (float) waveRect.getY(), (float) mx, (float) waveRect.getY() + 9.0f);
+        g.fillPath (tri);
+    }
+
+    g.setFont (uiFont (10.5f));
+    g.setColour (neon::text.withAlpha (0.85f));
+    const double secs = (double) (le + 1 - ls) / s.sampleRate;
+    g.drawText ((own ? "LOOP  " : "DEFAULT LOOP (2nd half)  ") + juce::String (secs, 2) + " s     drag the green markers  /  AUTO LOOP",
+                waveRect.reduced (8, 4), juce::Justification::topLeft, false);
 }
 
 juce::Rectangle<float> MapView::zoneRect (const NaySample& s) const
@@ -314,7 +618,7 @@ void MapView::paint (juce::Graphics& g)
     g.setColour (neon::cyan.withAlpha (0.4f));
     g.drawRoundedRectangle (all.reduced (0.5f), 10.0f, 1.2f);
 
-    g.setColour (juce::Colour (0xff070c16));
+    g.setColour (juce::Colour (0xff030201));
     g.fillRect (grid);
 
     for (int k = 0; k < 128; k += 12)
@@ -335,7 +639,32 @@ void MapView::paint (juce::Graphics& g)
 
     g.setColour (neon::cyan);
     g.setFont (uiFont (13.0f));
-    g.drawText ("MAPPING  //  key range x velocity range", 14, 14, 420, 28, juce::Justification::centredLeft, false);
+    g.drawText ("MAPPING", 14, 14, 200, 28, juce::Justification::centredLeft, false);
+
+    // waveform / loop area
+    g.setColour (juce::Colour (0xff030201));
+    g.fillRect (waveRect);
+    g.setColour (neon::cyan.withAlpha (0.35f));
+    g.drawRect (waveRect, 1);
+    if (auto* sel = selectedSample())
+        paintWave (g, *sel);
+    else
+    {
+        g.setColour (neon::dim);
+        g.setFont (uiFont (12.0f, false));
+        g.drawText ("Select a zone to see its waveform and loop points", waveRect, juce::Justification::centred, false);
+    }
+
+    if (dropHover)
+    {
+        g.setColour (neon::amber.withAlpha (0.18f));
+        g.fillRect (grid);
+        g.setColour (neon::amber);
+        g.drawRect (grid, 3);
+        g.setFont (uiFont (18.0f));
+        g.drawText (proc.isUserInstrument (proc.getActiveGroup()) ? "DROP TO ADD TO THIS INSTRUMENT" : "DROP TO MAKE A NEW INSTRUMENT",
+                    grid, juce::Justification::centred, false);
+    }
 
     // keyboard strip (keys altered by the chosen maqam / fine tune light up)
     for (int k = 0; k < 128; ++k)
@@ -363,10 +692,13 @@ void MapView::paint (juce::Graphics& g)
     auto bank = currentBank();
     if (bank == nullptr || bank->empty())
     {
-        g.setColour (neon::dim);
-        g.setFont (uiFont (15.0f));
-        g.drawText ("NO INSTRUMENT  (use ADD FOLDER)",
-                    grid, juce::Justification::centred, false);
+        if (! dropHover)
+        {
+            g.setColour (neon::dim);
+            g.setFont (uiFont (15.0f));
+            g.drawText ("DRAG & DROP WAV FILES (or a folder) HERE   -   notes are found from the name or the sound",
+                        grid, juce::Justification::centred, false);
+        }
         return;
     }
 
@@ -379,7 +711,7 @@ void MapView::paint (juce::Graphics& g)
 
             const auto& s = *(*bank)[(size_t) i];
             const auto r = zoneRect (s);
-            const auto col = juce::Colour::fromHSV (std::fmod ((float) i * 0.17f + 0.5f, 1.0f), 0.75f, 1.0f, 1.0f);
+            const auto col = juce::Colour::fromHSV (0.085f + std::fmod ((float) i * 0.023f, 0.05f), 0.72f, 0.6f + 0.4f * std::fmod ((float) i * 0.37f, 1.0f), 1.0f);
 
             g.setColour (col.withAlpha (sel ? 0.5f : 0.28f));
             g.fillRect (r);
@@ -435,6 +767,20 @@ int MapView::hitTest (juce::Point<float> pt, int& edges) const
 
 void MapView::mouseMove (const juce::MouseEvent& e)
 {
+    if (waveRect.contains (e.getPosition()))
+    {
+        bool near = false;
+        if (auto* s = selectedSample())
+        {
+            const int len = s->data.getNumSamples();
+            int ls = s->loopStart.load(), le = s->loopEnd.load();
+            if (! (ls >= 0 && le > ls + 8 && le < len)) { ls = len / 2; le = len - 2; }
+            near = std::abs (e.x - sampleToX (*s, ls)) < 8 || std::abs (e.x - sampleToX (*s, le + 1)) < 8;
+        }
+        setMouseCursor (near ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::NormalCursor);
+        return;
+    }
+
     int edges = 0;
     const int i = hitTest (e.position, edges);
     if (i < 0)                                  setMouseCursor (juce::MouseCursor::NormalCursor);
@@ -446,6 +792,25 @@ void MapView::mouseMove (const juce::MouseEvent& e)
 
 void MapView::mouseDown (const juce::MouseEvent& e)
 {
+    loopDrag = 0;
+    if (waveRect.contains (e.getPosition()))
+    {
+        if (auto* s = selectedSample())
+        {
+            const int len = s->data.getNumSamples();
+            int ls = s->loopStart.load(), le = s->loopEnd.load();
+            if (! (ls >= 0 && le > ls + 8 && le < len)) { ls = len / 2; le = len - 2; }
+            const int ds = std::abs (e.x - sampleToX (*s, ls)), de = std::abs (e.x - sampleToX (*s, le + 1));
+            if (ds < 8 || de < 8)
+            {
+                loopDrag = ds <= de ? 1 : 2;
+                s->loopStart = ls;    // a default loop becomes the sample's own loop when touched
+                s->loopEnd = le;
+            }
+        }
+        return;
+    }
+
     int edges = 0;
     const int i = hitTest (e.position, edges);
     selectSample (i);
@@ -462,6 +827,31 @@ void MapView::mouseDown (const juce::MouseEvent& e)
 
 void MapView::mouseDrag (const juce::MouseEvent& e)
 {
+    if (loopDrag != 0)
+    {
+        if (auto* s = selectedSample())
+        {
+            const int len = s->data.getNumSamples();
+            const float* x = s->data.getReadPointer (0);
+            int pos = xToSample (*s, e.position.x);
+            // snap to the nearest upward zero crossing (clean loop point)
+            const int range = juce::jmax (64, len / juce::jmax (1, waveRect.getWidth()) * 4);
+            int best = -1;
+            for (int d = 0; d < range && best < 0; ++d)
+                for (int c : { pos - d, pos + d })
+                    if (c > 0 && c < len - 1 && x[c - 1] <= 0.0f && x[c] > 0.0f) { best = c; break; }
+            if (best >= 0) pos = best;
+
+            if (loopDrag == 1)
+                s->loopStart = juce::jlimit (0, s->loopEnd.load() - 64, pos);
+            else
+                s->loopEnd = juce::jlimit (s->loopStart.load() + 64, len - 2, pos - 1);
+            edited();
+            repaint();
+        }
+        return;
+    }
+
     auto bank = currentBank();
     if (bank == nullptr || selected < 0 || selected >= (int) bank->size())
         return;
@@ -485,6 +875,7 @@ void MapView::mouseDrag (const juce::MouseEvent& e)
         if (dragEdges & eT) s.vhi = juce::jlimit (o_vlo, 127, o_vhi + dv);
         if (dragEdges & eB) s.vlo = juce::jlimit (1, o_vhi, o_vlo + dv);
     }
+    edited();
     repaint();
 }
 
@@ -494,7 +885,7 @@ void WheelView::paint (juce::Graphics& g)
     auto r = getLocalBounds().toFloat().reduced (1.0f);
     const float v = juce::jlimit (bipolar ? -1.0f : 0.0f, 1.0f, getter());
 
-    g.setColour (juce::Colour (0xff070c16));
+    g.setColour (juce::Colour (0xff030201));
     g.fillRoundedRectangle (r, 6.0f);
 
     g.saveState();
@@ -515,10 +906,11 @@ void WheelView::paint (juce::Graphics& g)
 
     const float pos = bipolar ? r.getCentreY() - v * (r.getHeight() * 0.5f - 6.0f)
                               : r.getBottom() - 6.0f - v * (r.getHeight() - 12.0f);
-    g.setColour (col.withAlpha (0.3f));
-    g.fillRect (r.getX() + 1.0f, pos - 4.0f, r.getWidth() - 2.0f, 8.0f);
-    g.setColour (col.brighter (0.4f));
-    g.fillRect (r.getX() + 1.0f, pos - 1.5f, r.getWidth() - 2.0f, 3.0f);
+    juce::ignoreUnused (col);
+    g.setColour (neon::led.withAlpha (0.3f));
+    g.fillRect (r.getX() + 1.0f, pos - 5.0f, r.getWidth() - 2.0f, 10.0f);
+    g.setColour (neon::led);
+    g.fillRoundedRectangle (r.getX() + 3.0f, pos - 2.5f, r.getWidth() - 6.0f, 5.0f, 2.0f);
 
     if (bipolar)
     {
@@ -594,33 +986,41 @@ void NoteKey::paint (juce::Graphics& g)
     const float w = (float) getWidth();
     const juce::Rectangle<float> r (3.0f, 13.0f, w - 6.0f, 36.0f);
 
-    g.setColour (neon::text);
-    g.setFont (uiFont (13.0f));
+    g.setColour (neon::gold);
+    g.setFont (uiFont (12.5f).withExtraKerningFactor (0.1f));
     g.drawText (kNames[pc], 0, 0, getWidth(), 13, juce::Justification::centred, false);
 
-    g.setColour (juce::Colours::black);
-    g.fillRoundedRectangle (r.translated (0.0f, 2.0f), 5.0f);
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff343b46), 0.0f, r.getY(), juce::Colour (0xff10141a), 0.0f, r.getBottom(), false));
-    g.fillRoundedRectangle (r, 5.0f);
-    g.setColour (juce::Colour (0xff4a5565));
-    g.drawRoundedRectangle (r.reduced (0.5f), 5.0f, 1.0f);
+    // dark key, chamfered gold outline
+    juce::Path key;
+    {
+        const float c = 6.0f;
+        key.startNewSubPath (r.getX() + c, r.getY());
+        key.lineTo (r.getRight() - c, r.getY());  key.lineTo (r.getRight(), r.getY() + c);
+        key.lineTo (r.getRight(), r.getBottom() - c); key.lineTo (r.getRight() - c, r.getBottom());
+        key.lineTo (r.getX() + c, r.getBottom()); key.lineTo (r.getX(), r.getBottom() - c);
+        key.lineTo (r.getX(), r.getY() + c);      key.closeSubPath();
+    }
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff18120a), 0.0f, r.getY(), juce::Colour (0xff050302), 0.0f, r.getBottom(), false));
+    g.fillPath (key);
+    g.setColour ((lowered || raised) ? neon::gold : neon::gold.withAlpha (0.6f));
+    g.strokePath (key, juce::PathStrokeType (1.3f));
 
-    const juce::Rectangle<float> led (r.getCentreX() - 17.0f, r.getY() + 6.0f, 34.0f, 7.0f);
+    // LED bar: light turquoise glow when the note is altered
+    const juce::Rectangle<float> led (r.getCentreX() - 17.0f, r.getY() + 6.0f, 34.0f, 6.0f);
     if (lowered || raised)
     {
-        const auto lc = lowered ? juce::Colour (0xffff3b2a) : juce::Colours::white;
-        g.setColour (lc.withAlpha (0.35f));
+        g.setColour (neon::led.withAlpha (0.3f));
         g.fillRoundedRectangle (led.expanded (4.0f, 3.0f), 4.0f);
-        g.setGradientFill (juce::ColourGradient (lc.brighter (0.4f), 0.0f, led.getY(), lc, 0.0f, led.getBottom(), false));
-        g.fillRoundedRectangle (led, 2.0f);
+        g.setColour (neon::led);
+        g.fillRoundedRectangle (led, 2.5f);
     }
     else
     {
-        g.setColour (juce::Colour (0xff2a1416));
-        g.fillRoundedRectangle (led, 2.0f);
+        g.setColour (juce::Colour (0xff141a1c));
+        g.fillRoundedRectangle (led, 2.5f);
     }
 
-    g.setColour (lowered ? juce::Colour (0xffff7a6a) : raised ? juce::Colours::white : neon::dim);
+    g.setColour ((lowered || raised) ? neon::led : neon::gold.withAlpha (0.65f));
     g.setFont (uiFont (12.0f));
     const int v = (int) std::round (eff);
     g.drawText ((v > 0 ? "+" : "") + juce::String (v), r.toNearestInt().withTrimmedTop (18), juce::Justification::centred, false);
@@ -678,7 +1078,7 @@ static void drawAnkh (juce::Graphics& g, float x, float y, float h, juce::Colour
 }
 
 NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
-    : juce::AudioProcessorEditor (&p), proc (p), mapView (p)
+    : juce::AudioProcessorEditor (&p), proc (p), mapView (p), waveEd (p)
 {
     setLookAndFeel (&laf);
     addAndMakeVisible (page);
@@ -687,6 +1087,25 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     addChildComponent (mixer);
     addChildComponent (voiceEd);
     settings.addAndMakeVisible (mapView);
+    settings.addChildComponent (waveEd);
+    mapView.onEditWave = [this] (int i)
+    {
+        if (proc.getActiveGroup() < 0)
+            return;
+        waveEd.open (i);
+        waveEd.setVisible (true);
+        waveEd.toFront (false);
+    };
+    waveEd.onClose = [this]
+    {
+        waveEd.setVisible (false);
+        refreshGroups();
+    };
+    waveEd.onChanged = [this] (const juce::String& msg)
+    {
+        info.setText (msg, juce::dontSendNotification);
+        settings.repaint (lcdA2);
+    };
 
     const auto tq = neon::cyan, cr = neon::magenta, gd = neon::amber, pp = neon::green, lp = neon::violet;
 
@@ -785,6 +1204,16 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     kArpOct  = addKnob (page, P_arpOct,  "OCTAVES", 0, "", gd);
     kArpGate = addKnob (page, P_arpGate, "GATE",    2, "", gd);
 
+    // ---- oscillator layer ----
+    tOscOn   = addToggle (page, P_oscOn,   "OSCILLATOR ON", pp);
+    tOscOnly = addToggle (page, P_oscOnly, "OSC ONLY", pp);
+    addCombo (page, oscWaveBox, P_oscWave, oscWaveAtt);
+    oscWaveBox.setColour (juce::ComboBox::outlineColourId, pp);
+    kOscLvl  = addKnob (page, P_oscLevel, "LEVEL",  1, "dB", pp);
+    kOscTune = addKnob (page, P_oscTune,  "TUNE",   0, "semi", pp);
+    kOscFine = addKnob (page, P_oscFine,  "FINE",   0, "ct", pp);
+    kOscCut  = addKnob (page, P_oscCut,   "FILTER", 0, "Hz", pp);
+
     // ---- wheels + bend range ----
     page.addAndMakeVisible (pitchWheel);
     page.addAndMakeVisible (modWheelView);
@@ -860,6 +1289,38 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
                             true);
     };
 
+    // ---- user instruments: NEW (name it, then drop WAVs on the mapping) / SAVE (one .esi file) ----
+    newInstBtn.setColour (juce::TextButton::buttonColourId, gd);
+    saveInstBtn.setColour (juce::TextButton::buttonColourId, pp);
+    settings.addAndMakeVisible (newInstBtn);
+    settings.addAndMakeVisible (saveInstBtn);
+    newInstBtn.onClick = [this]
+    {
+        promptName ("New instrument", "My Instrument", [this] (juce::String nm)
+        {
+            proc.createInstrument (nm);
+            refreshGroups();
+            info.setText ("New instrument \"" + nm.trim() + "\" - now drag & drop WAV files on the mapping", juce::dontSendNotification);
+        });
+    };
+    saveInstBtn.onClick = [this]
+    {
+        const int idx = proc.getActiveGroup();
+        if (idx < 0)
+            return;
+        const bool wasUser = proc.isUserInstrument (idx);
+        const bool ok = proc.saveInstrument (idx);
+        refreshGroups();
+        info.setText (ok ? (wasUser ? "Saved:  " : "Saved as a new user instrument:  ") + proc.getGroupPath (idx)
+                         : "SAVE FAILED - cannot write " + proc.getGroupPath (idx),
+                      juce::dontSendNotification);
+    };
+    mapView.onChanged = [this] (const juce::String& msg)
+    {
+        refreshGroups();
+        info.setText (msg, juce::dontSendNotification);
+    };
+
     // ---- top buttons: BROWSE / MIXER / SETTINGS (click the active one again to go back) ----
     browseButton.setColour (juce::TextButton::buttonColourId, tq);
     mixerButton.setColour (juce::TextButton::buttonColourId, lp);
@@ -888,6 +1349,14 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     mkFader (kMainLvl, tq);  mkFader (kDuoLvl, gd);  mkFader (kSatMix, gd);  mkFader (kWahMix, pp);
     mkFader (kPhMix, lp);    mkFader (kDlLvl, tq);   mkFader (kRvLvl, cr);    mkFader (kMaster, pp);
 
+    // ---- OSC channel strip: its own fader / pan / mute / SOLO ----
+    tOscSoloMix = addToggle (mixer, P_oscOnly, "SOLO", gd);
+    kOscFader   = addKnob (mixer, P_oscLevel, "LEVEL", 1, "dB", pp);
+    kOscPan     = addKnob (mixer, P_oscPan, "PAN", 2, "", pp);
+    tOscMuteMix = addToggle (mixer, P_oscMute, "MUTE", cr);
+    tOscOnMix   = addToggle (mixer, P_oscOn, "ON", pp);
+    mkFader (kOscFader, pp);
+
     // ---- voice edit page (Yamaha-style portamento / velocity / touch) ----
     tPorta = addToggle (voiceEd, P_portaOn, "MAGIC LEGATO", cr);
     tMagic = addToggle (page, P_portaOn, "MAGIC LEGATO", cr);
@@ -914,7 +1383,7 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
 
     // ---- browse page ----
     searchBox.setTextToShowWhenEmpty ("search by name...", neon::dim);
-    searchBox.setColour (juce::TextEditor::backgroundColourId, juce::Colour (0xff070c16));
+    searchBox.setColour (juce::TextEditor::backgroundColourId, juce::Colour (0xff030201));
     searchBox.setColour (juce::TextEditor::textColourId, neon::text);
     searchBox.setColour (juce::TextEditor::outlineColourId, neon::amber.withAlpha (0.6f));
     searchBox.setFont (uiFont (14.0f, false));
@@ -939,7 +1408,7 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     for (auto* lb : { &catList, &instList })
     {
         lb->setRowHeight (30);
-        lb->setColour (juce::ListBox::backgroundColourId, juce::Colour (0xff070c16));
+        lb->setColour (juce::ListBox::backgroundColourId, juce::Colour (0xff030201));
         lb->setColour (juce::ListBox::outlineColourId, neon::amber.withAlpha (0.6f));
         lb->setOutlineThickness (1);
         browse.addAndMakeVisible (*lb);
@@ -1070,9 +1539,9 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     {
         g.drawImageAt (bgImage, -mixer.getX(), -mixer.getY());
 
-        const char* titles[8] = { "MAIN", "DUO", "KRONOS", "WAH", "PHASER", "DELAY", "REVERB", "MASTER" };
-        const juce::Colour cols[8] = { neon::cyan, neon::amber, neon::amber, neon::green, neon::violet, neon::cyan, neon::magenta, neon::green };
-        for (int i = 0; i < 8; ++i)
+        const char* titles[9] = { "MAIN", "DUO", "OSC", "KRONOS", "WAH", "PHASER", "DELAY", "REVERB", "MASTER" };
+        const juce::Colour cols[9] = { neon::cyan, neon::amber, neon::green, neon::amber, neon::green, neon::violet, neon::cyan, neon::magenta, neon::green };
+        for (int i = 0; i < 9; ++i)
             drawPanel (g, mixStrip[i], titles[i], cols[i]);
 
         const int a = proc.getActiveGroup(), d = proc.getDuoGroup();
@@ -1083,21 +1552,23 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
 
         // master level meter
         {
-            const auto& s = mixStrip[7];
+            const auto& s = mixStrip[8];
             for (int ch = 0; ch < 2; ++ch)
             {
                 const float lv = proc.getMeter (ch);
                 const float db = 20.0f * std::log10 (juce::jmax (1.0e-4f, lv));
                 const float fr = juce::jlimit (0.0f, 1.0f, (db + 60.0f) / 66.0f);
-                const float bx = (float) s.getX() + 88.0f + (float) ch * 11.0f, by = 80.0f, bh = 268.0f;
-                g.setColour (juce::Colour (0xff02050a));
+                const float bx = (float) s.getRight() - 24.0f + (float) ch * 10.0f, by = 80.0f, bh = 268.0f;
+                g.setColour (juce::Colour (0xff030201));
                 g.fillRoundedRectangle (bx, by, 8.0f, bh, 3.0f);
                 const float fh2 = bh * fr;
-                juce::ColourGradient cg (juce::Colour (0xffff4a3a), 0.0f, by, neon::green, 0.0f, by + bh, false);
-                cg.addColour (0.2, neon::amber);
+                juce::ColourGradient cg (juce::Colour (0xffe8fbff), 0.0f, by, neon::led.darker (0.3f), 0.0f, by + bh, false);
+                cg.addColour (0.2, neon::led);
                 g.setGradientFill (cg);
                 g.fillRoundedRectangle (bx, by + bh - fh2, 8.0f, fh2, 3.0f);
-                g.setColour (juce::Colour (0xffb8863a));
+                g.setColour (neon::led.withAlpha (0.18f));
+                g.fillRoundedRectangle (bx - 2.0f, by + bh - fh2, 12.0f, fh2, 4.0f);
+                g.setColour (neon::bronze.brighter (0.3f));
                 g.drawRoundedRectangle (bx, by, 8.0f, bh, 3.0f, 1.0f);
             }
         }
@@ -1138,14 +1609,16 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
 
         drawPanel (g, pVoice, "VOICE", neon::cyan);
         drawPanel (g, pMaqam, "SCALE TUNE SETTING", neon::amber);
-        drawPanel (g, pPerf, "PLAYING", neon::green);
+        drawPanel (g, pPerf, "OSCILLATOR", neon::green);
+        drawAnubis (g, (float) pPerf.getX() + 360.0f, (float) pPerf.getY() + 10.0f, 118.0f, 0.10f, false);   // faint watermark
         drawPanel (g, pArp, "ARPEGGIATOR", neon::amber);
         drawPanel (g, pWheels, "WHEELS", neon::cyan);
-        g.setFont (uiFont (11.0f, false));
+        g.setFont (uiFont (10.5f));
         g.setColour (neon::dim);
-        g.drawText ("Tip: click the INSTRUMENT or DUO screen to open the voice list.", pPerf.getX() + 14, pPerf.getY() + 60, 600, 16, juce::Justification::centredLeft, false);
-        g.drawText ("Note variation ON = every key press may use a neighbouring sample (within 2 semitones), pitch-corrected.", pPerf.getX() + 14, pPerf.getY() + 82, 800, 16, juce::Justification::centredLeft, false);
-        g.drawText ("TRANSPOSE moves the quarter-tone key tuning with it (like an arranger keyboard).", pPerf.getX() + 14, pPerf.getY() + 104, 800, 16, juce::Justification::centredLeft, false);
+        g.drawText ("WAVE", pPerf.getX() + 176, pPerf.getY() + 30, 140, 12, juce::Justification::centredLeft, false);
+        g.setFont (uiFont (10.5f, false));
+        g.drawText ("Plays with the samples and follows glide, bend, vibrato and the maqam.  OSC ONLY = the oscillator alone.  Goes through all the effects.",
+                    pPerf.getX() + 176, pPerf.getY() + 100, 330, 28, juce::Justification::topLeft, true);
         g.setFont (uiFont (9.0f));
         g.setColour (neon::dim);
         g.drawText ("PITCH", pWheels.getX() + 4, pWheels.getY() + 24, 36, 10, juce::Justification::centred, false);
@@ -1163,7 +1636,7 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
         g.drawText ("OCTAVE", pMaqam.getX() + 130, pMaqam.getY() + 28, 108, 12, juce::Justification::centred, false);
         g.setColour (neon::dim);
         g.setFont (uiFont (10.5f, false));
-        g.drawText ("Altered notes light up red.  Click = quarter-tone on/off.  Drag = fine tune.",
+        g.drawText ("Altered notes light up.  Click = quarter-tone on/off.  Drag = fine tune.",
                     pMaqam.getX() + 330, pMaqam.getY() + 6, 630, 14, juce::Justification::centredRight, false);
         g.setFont (uiFont (9.5f));
         g.drawText ("SCALE TUNE MEMORY: MEMORY then 1-5 = store, 1-5 = recall", pMaqam.getX() + 776, pMaqam.getY() + 130, 190, 12, juce::Justification::centred, false);
@@ -1176,8 +1649,17 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
 
         const int a = proc.getActiveGroup();
         auto bank = proc.getBankOf (a);
-        drawLcd (g, lcdA2, "INSTRUMENT", a >= 0 ? proc.getGroupName (a) : "NO INSTRUMENT",
-                 a >= 0 ? juce::String (bank != nullptr ? (int) bank->size() : 0) + " samples" : "press ADD FOLDER", neon::cyan);
+        juce::String sub = "press NEW INSTRUMENT or ADD FOLDER";
+        if (a >= 0)
+        {
+            sub = juce::String (bank != nullptr ? (int) bank->size() : 0) + " samples";
+            if (proc.isUserInstrument (a))
+                sub << (proc.isDirty (a) ? "   *  UNSAVED CHANGES - press SAVE INSTRUMENT" : "   -  my instrument (saved)");
+            else
+                sub << "   -  folder  (SAVE INSTRUMENT = make it one file)";
+        }
+        drawLcd (g, lcdA2, "INSTRUMENT", a >= 0 ? proc.getGroupName (a) : "NO INSTRUMENT", sub,
+                 a >= 0 && proc.isDirty (a) ? neon::magenta : neon::cyan);
     };
 
     refreshGroups();
@@ -1396,7 +1878,7 @@ void NayAudioProcessorEditor::setupStepBox (juce::Slider& s, std::unique_ptr<juc
     s.setIncDecButtonsMode (juce::Slider::incDecButtonsNotDraggable);
     s.setTextBoxStyle (juce::Slider::TextBoxLeft, false, 44, 32);
     s.setColour (juce::Slider::textBoxTextColourId, neon::amber);
-    s.setColour (juce::Slider::textBoxBackgroundColourId, juce::Colour (0xff070c16));
+    s.setColour (juce::Slider::textBoxBackgroundColourId, juce::Colour (0xff030201));
     s.setColour (juce::Slider::textBoxOutlineColourId, neon::amber.withAlpha (0.6f));
     s.setColour (juce::TextButton::buttonColourId, neon::amber);
     att = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (proc.apvts, paramId, s);
@@ -1474,6 +1956,11 @@ void NayAudioProcessorEditor::showView (int v)
     voiceButton.setToggleState (v == 4, juce::dontSendNotification);
     voiceButton.setButtonText (v == 4 ? "BACK" : "VOICE");
     settings.setVisible (v == 3);
+    if (v != 3 && waveEd.isVisible())
+    {
+        proc.stopPreview();
+        waveEd.setVisible (false);
+    }
     browseButton.setToggleState (v == 1, juce::dontSendNotification);
     mixerButton.setToggleState (v == 2, juce::dontSendNotification);
     mapButton.setToggleState (v == 3, juce::dontSendNotification);
@@ -1607,53 +2094,132 @@ void NayAudioProcessorEditor::refreshGroups()
 }
 
 //==============================================================================
-// simple hand-drawn hieroglyph-like symbols for the carved side borders
+// hieroglyph frieze symbols: ankh, Eye of Horus, djed, scarab, feather, water (drawn with paths, outlined)
 static void drawGlyph (juce::Graphics& g, int kind, float cx, float cy, float s, juce::Colour col)
 {
     juce::Path p;
     switch (kind % 6)
     {
         case 0: // ankh
-            p.addEllipse (cx - s * 0.22f, cy - s * 0.5f, s * 0.44f, s * 0.5f);
-            p.addRectangle (cx - s * 0.05f, cy, s * 0.1f, s * 0.5f);
-            p.addRectangle (cx - s * 0.3f, cy + s * 0.08f, s * 0.6f, s * 0.09f);
+            p.addEllipse (cx - s * 0.18f, cy - s * 0.5f, s * 0.36f, s * 0.42f);
+            p.startNewSubPath (cx, cy - s * 0.08f); p.lineTo (cx, cy + s * 0.5f);
+            p.startNewSubPath (cx - s * 0.3f, cy + s * 0.02f); p.lineTo (cx + s * 0.3f, cy + s * 0.02f);
             break;
-        case 1: // eye
-            p.startNewSubPath (cx - s * 0.4f, cy);
-            p.quadraticTo (cx, cy - s * 0.4f, cx + s * 0.4f, cy);
-            p.quadraticTo (cx, cy + s * 0.3f, cx - s * 0.4f, cy);
-            p.addEllipse (cx - s * 0.12f, cy - s * 0.12f, s * 0.24f, s * 0.24f);
-            p.addRectangle (cx - s * 0.04f, cy + s * 0.22f, s * 0.08f, s * 0.26f);
+        case 1: // Eye of Horus
+            p.startNewSubPath (cx - s * 0.45f, cy - s * 0.05f);
+            p.quadraticTo (cx, cy - s * 0.38f, cx + s * 0.45f, cy - s * 0.05f);
+            p.quadraticTo (cx, cy + s * 0.2f, cx - s * 0.45f, cy - s * 0.05f);
+            p.addEllipse (cx - s * 0.1f, cy - s * 0.17f, s * 0.2f, s * 0.2f);
+            p.startNewSubPath (cx - s * 0.05f, cy + s * 0.08f); p.quadraticTo (cx - s * 0.1f, cy + s * 0.45f, cx - s * 0.3f, cy + s * 0.4f);
+            p.startNewSubPath (cx + s * 0.1f, cy + s * 0.08f); p.lineTo (cx + s * 0.2f, cy + s * 0.45f);
+            p.startNewSubPath (cx - s * 0.45f, cy - s * 0.3f); p.quadraticTo (cx, cy - s * 0.55f, cx + s * 0.45f, cy - s * 0.3f);
             break;
-        case 2: // water
-            for (int k = 0; k < 3; ++k)
+        case 2: // djed pillar
+            p.startNewSubPath (cx - s * 0.12f, cy + s * 0.5f); p.lineTo (cx - s * 0.12f, cy - s * 0.5f);
+            p.startNewSubPath (cx + s * 0.12f, cy + s * 0.5f); p.lineTo (cx + s * 0.12f, cy - s * 0.5f);
+            for (int k = 0; k < 4; ++k)
             {
-                const float yy = cy - s * 0.25f + (float) k * s * 0.25f;
-                p.startNewSubPath (cx - s * 0.4f, yy);
-                for (int z = 1; z <= 4; ++z)
-                    p.lineTo (cx - s * 0.4f + (float) z * s * 0.2f, yy + (z % 2 ? -s * 0.1f : 0.0f));
+                const float yy = cy - s * 0.42f + (float) k * s * 0.12f;
+                p.startNewSubPath (cx - s * 0.3f, yy); p.lineTo (cx + s * 0.3f, yy);
             }
             break;
-        case 3: // bird
-            p.addEllipse (cx - s * 0.12f, cy - s * 0.45f, s * 0.24f, s * 0.24f);
-            p.addRoundedRectangle (cx - s * 0.22f, cy - s * 0.2f, s * 0.44f, s * 0.5f, s * 0.15f);
-            p.addRectangle (cx - s * 0.16f, cy + s * 0.3f, s * 0.05f, s * 0.2f);
-            p.addRectangle (cx + s * 0.11f, cy + s * 0.3f, s * 0.05f, s * 0.2f);
+        case 3: // scarab
+            p.addEllipse (cx - s * 0.2f, cy - s * 0.18f, s * 0.4f, s * 0.55f);
+            p.addEllipse (cx - s * 0.11f, cy - s * 0.38f, s * 0.22f, s * 0.2f);
+            p.startNewSubPath (cx, cy - s * 0.18f); p.lineTo (cx, cy + s * 0.37f);
+            for (int sd = -1; sd <= 1; sd += 2)
+            {
+                p.startNewSubPath (cx + (float) sd * s * 0.2f, cy - s * 0.05f); p.lineTo (cx + (float) sd * s * 0.42f, cy - s * 0.2f);
+                p.startNewSubPath (cx + (float) sd * s * 0.2f, cy + s * 0.2f);  p.lineTo (cx + (float) sd * s * 0.42f, cy + s * 0.38f);
+            }
             break;
-        case 4: // was scepter
-            p.addRectangle (cx - s * 0.04f, cy - s * 0.4f, s * 0.08f, s * 0.9f);
-            p.addTriangle (cx - s * 0.2f, cy - s * 0.5f, cx + s * 0.2f, cy - s * 0.5f, cx, cy - s * 0.25f);
+        case 4: // feather of Maat
+            p.startNewSubPath (cx, cy + s * 0.5f);
+            p.quadraticTo (cx - s * 0.22f, cy - s * 0.1f, cx + s * 0.05f, cy - s * 0.5f);
+            p.quadraticTo (cx + s * 0.22f, cy - s * 0.05f, cx, cy + s * 0.5f);
+            p.startNewSubPath (cx, cy + s * 0.5f); p.lineTo (cx + s * 0.03f, cy - s * 0.35f);
             break;
-        default: // sun disk
-            p.addEllipse (cx - s * 0.3f, cy - s * 0.3f, s * 0.6f, s * 0.6f);
-            p.addEllipse (cx - s * 0.08f, cy - s * 0.08f, s * 0.16f, s * 0.16f);
+        default: // water
+            for (int k = 0; k < 2; ++k)
+            {
+                const float yy = cy - s * 0.08f + (float) k * s * 0.22f;
+                p.startNewSubPath (cx - s * 0.4f, yy);
+                for (int z = 1; z <= 4; ++z)
+                    p.lineTo (cx - s * 0.4f + (float) z * s * 0.2f, yy + (z % 2 ? -s * 0.12f : 0.0f));
+            }
             break;
     }
-    const auto st = juce::PathStrokeType (s * 0.09f);
-    g.setColour (juce::Colour (0xfff2c866).withAlpha (0.35f));
-    g.strokePath (p, st, juce::AffineTransform::translation (1.0f, 1.0f));
     g.setColour (col);
-    g.strokePath (p, st);
+    g.strokePath (p, juce::PathStrokeType (juce::jmax (1.0f, s * 0.07f), juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+}
+
+// Anubis jackal head in profile (facing right), gold gradient, turquoise eye
+static void drawAnubis (juce::Graphics& g, float x, float y, float h, float alpha, bool eye)
+{
+    const float w = h * 0.95f;
+    auto P = [&] (float u, float v) { return juce::Point<float> (x + u * w, y + v * h); };
+    juce::Path p;
+    p.startNewSubPath (P (0.30f, 0.00f));           // ear tip
+    p.lineTo (P (0.44f, 0.36f));                    // ear front
+    p.quadraticTo (P (0.52f, 0.36f), P (0.60f, 0.42f));   // forehead
+    p.lineTo (P (0.95f, 0.56f));                    // snout top
+    p.quadraticTo (P (1.00f, 0.58f), P (0.98f, 0.63f));   // nose
+    p.lineTo (P (0.70f, 0.66f));                    // jaw
+    p.quadraticTo (P (0.58f, 0.70f), P (0.54f, 0.78f));   // throat
+    p.lineTo (P (0.62f, 1.00f));                    // neck front
+    p.lineTo (P (0.12f, 1.00f));                    // neck back
+    p.quadraticTo (P (0.06f, 0.70f), P (0.16f, 0.50f));   // back of the head
+    p.lineTo (P (0.22f, 0.34f));                    // ear back
+    p.closeSubPath();
+
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xfffbe7a6).withAlpha (alpha), x, y,
+                                             juce::Colour (0xff7a4c10).withAlpha (alpha), x + w, y + h, false));
+    g.fillPath (p);
+    g.setColour (juce::Colour (0xff2b1807).withAlpha (alpha * 0.8f));
+    g.strokePath (p, juce::PathStrokeType (juce::jmax (0.8f, h * 0.012f)));
+
+    // inner ear + collar lines
+    juce::Path d;
+    d.startNewSubPath (P (0.31f, 0.08f)); d.lineTo (P (0.38f, 0.33f));
+    d.startNewSubPath (P (0.20f, 0.80f)); d.lineTo (P (0.24f, 0.98f));
+    d.startNewSubPath (P (0.26f, 0.78f)); d.lineTo (P (0.30f, 0.98f));
+    d.startNewSubPath (P (0.32f, 0.76f)); d.lineTo (P (0.36f, 0.98f));
+    g.setColour (juce::Colour (0xff2b1807).withAlpha (alpha * 0.7f));
+    g.strokePath (d, juce::PathStrokeType (juce::jmax (0.8f, h * 0.012f)));
+
+    // kohl-lined eye
+    juce::Path e;
+    e.startNewSubPath (P (0.50f, 0.50f));
+    e.quadraticTo (P (0.58f, 0.45f), P (0.68f, 0.50f));
+    e.quadraticTo (P (0.58f, 0.53f), P (0.50f, 0.50f));
+    g.setColour (juce::Colours::black.withAlpha (alpha));
+    g.strokePath (e, juce::PathStrokeType (juce::jmax (1.0f, h * 0.02f)));
+    if (eye)
+    {
+        const auto c = P (0.585f, 0.495f);
+        g.setColour (neon::led.withAlpha (alpha));
+        g.fillEllipse (c.x - h * 0.02f, c.y - h * 0.02f, h * 0.04f, h * 0.04f);
+    }
+}
+
+// winged sun disk
+static void drawWingedSun (juce::Graphics& g, float cx, float cy, float s)
+{
+    for (int sd = -1; sd <= 1; sd += 2)
+    {
+        juce::Path wing;
+        wing.startNewSubPath (cx + (float) sd * s * 0.18f, cy - s * 0.05f);
+        wing.quadraticTo (cx + (float) sd * s * 0.7f, cy - s * 0.35f, cx + (float) sd * s * 1.15f, cy - s * 0.12f);
+        wing.quadraticTo (cx + (float) sd * s * 0.7f, cy - s * 0.05f, cx + (float) sd * s * 0.95f, cy + s * 0.08f);
+        wing.quadraticTo (cx + (float) sd * s * 0.55f, cy + s * 0.06f, cx + (float) sd * s * 0.18f, cy + s * 0.12f);
+        wing.closeSubPath();
+        g.setGradientFill (juce::ColourGradient (juce::Colour (0xfffbe7a6), cx, cy - s * 0.3f, juce::Colour (0xff8a5b16), cx, cy + s * 0.2f, false));
+        g.fillPath (wing);
+    }
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xfffff0c0), cx - s * 0.2f, cy - s * 0.25f, juce::Colour (0xffb7832a), cx + s * 0.2f, cy + s * 0.25f, false));
+    g.fillEllipse (cx - s * 0.24f, cy - s * 0.24f, s * 0.48f, s * 0.48f);
+    g.setColour (neon::gold.withAlpha (0.25f));
+    g.drawEllipse (cx - s * 0.32f, cy - s * 0.32f, s * 0.64f, s * 0.64f, 2.0f);
 }
 
 static void drawLotus (juce::Graphics& g, float cx, float cy, float s)
@@ -1663,7 +2229,7 @@ static void drawLotus (juce::Graphics& g, float cx, float cy, float s)
         juce::Path p;
         p.addEllipse (-s * 0.12f, -s * 0.5f, s * 0.24f, s * 0.5f);
         p.applyTransform (juce::AffineTransform::rotation ((float) k * 0.45f).translated (cx, cy));
-        g.setColour (juce::Colour (0xffe3a93f).withAlpha (0.85f));
+        g.setColour (neon::gold.withAlpha (0.85f));
         g.strokePath (p, juce::PathStrokeType (1.2f));
     }
 }
@@ -1677,188 +2243,156 @@ void NayAudioProcessorEditor::rebuildBackground()
     bgImage = juce::Image (juce::Image::ARGB, w, h, true);
     juce::Graphics g (bgImage);
 
-    // deep black body with a faint grid and glowing circuit traces
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff0b1424), 0.0f, 0.0f, juce::Colour (0xff04060a), 0.0f, (float) h, false));
+    // near-black charcoal + a faint warm vignette at the top
+    g.fillAll (neon::bg0);
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff3a2a10).withAlpha (0.55f), (float) w * 0.3f, -40.0f,
+                                             juce::Colours::transparentBlack, (float) w * 0.3f, (float) h * 0.55f, true));
+    g.fillAll();
+    g.setGradientFill (juce::ColourGradient (juce::Colours::transparentBlack, (float) w * 0.5f, (float) h * 0.45f,
+                                             juce::Colours::black.withAlpha (0.55f), 0.0f, (float) h, true));
     g.fillAll();
 
-    g.setColour (neon::cyan.withAlpha (0.045f));
-    for (int x = 0; x < w; x += 40) g.drawVerticalLine (x, 0.0f, (float) h);
-    for (int y = 0; y < h; y += 40) g.drawHorizontalLine (y, 0.0f, (float) w);
-
-    g.setGradientFill (juce::ColourGradient (neon::cyan.withAlpha (0.07f), (float) w * 0.5f, (float) h * 0.30f,
-                                             juce::Colours::transparentBlack, (float) w * 0.5f, (float) h, true));
-    g.fillAll();
-    g.setGradientFill (juce::ColourGradient (neon::magenta.withAlpha (0.05f), (float) w, (float) h,
-                                             juce::Colours::transparentBlack, (float) w * 0.4f, (float) h * 0.4f, true));
-    g.fillAll();
-
-    juce::Random cr (11);
-    for (int i = 0; i < 40; ++i)
-    {
-        const float x0 = (float) cr.nextInt (w), y0 = (float) cr.nextInt (h);
-        const float x1 = x0 + 30.0f + (float) cr.nextInt (90), y1 = y0 + 20.0f + (float) cr.nextInt (50);
-        juce::Path p;
-        p.startNewSubPath (x0, y0);
-        p.lineTo (x1, y0);
-        p.lineTo (x1, y1);
-        g.setColour (neon::cyan.withAlpha (0.09f));
-        g.strokePath (p, juce::PathStrokeType (1.0f));
-        g.setColour (neon::cyan.withAlpha (0.25f));
-        g.fillEllipse (x1 - 2.5f, y1 - 2.5f, 5.0f, 5.0f);
-    }
-
+    // subtle stone grain
     juce::Random rnd (7);
-    for (int i = 0; i < 3000; ++i)
+    for (int i = 0; i < 2500; ++i)
     {
-        g.setColour ((i & 1 ? juce::Colours::white : juce::Colours::black).withAlpha (0.03f));
+        g.setColour ((i & 1 ? neon::gold : juce::Colours::black).withAlpha (0.025f));
         g.fillRect (rnd.nextInt (w), rnd.nextInt (h), 1 + rnd.nextInt (2), 1);
     }
 
-    // ---- header band with a stepped pyramid ----
+    // hieroglyph friezes along the top and bottom edges (subtle gold)
     const int fx = 30, hy = 70, fh = 36;
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff0e1a2e), 0.0f, 0.0f, juce::Colour (0xff05080f), 0.0f, (float) hy, false));
-    g.fillRect (fx, 0, w - 2 * fx, hy);
-    g.setColour (neon::cyan.withAlpha (0.55f));
-    g.drawHorizontalLine (hy - 2, (float) fx, (float) (w - fx));
-    for (int k = 0; k < 5; ++k)
-    {
-        const int sw = 110 - k * 20;
-        g.setGradientFill (juce::ColourGradient (juce::Colour (0xfff5d884), 0.0f, (float) (k * 6), juce::Colour (0xff8a5e1c), 0.0f, (float) (k * 6 + 6), false));
-        g.fillRect (w / 2 - sw / 2, k * 6, sw, 6);
-    }
+    for (int i = 0, x = 16; x < w - 8; x += 30, ++i)
+        drawGlyph (g, i, (float) x, 6.0f, 9.0f, neon::gold.withAlpha (0.16f));
+    g.setColour (neon::bronze.withAlpha (0.6f));
+    g.fillRect (0, 13, w, 1);
 
-    // ---- bronze carved frame: sides + footer ----
-    auto bronze = [&] (juce::Rectangle<int> r, bool vertical)
-    {
-        juce::ColourGradient bg (juce::Colour (0xff7a5418), (float) r.getX(), (float) r.getY(),
-                                 juce::Colour (0xff7a5418), vertical ? (float) r.getRight() : (float) r.getX(),
-                                 vertical ? (float) r.getY() : (float) r.getBottom(), false);
-        bg.addColour (0.5, juce::Colour (0xfff0cf74));
-        g.setGradientFill (bg);
-        g.fillRect (r);
-        for (int i = 0; i < r.getWidth() * r.getHeight() / 40; ++i)
-        {
-            g.setColour ((i & 1 ? juce::Colours::black : juce::Colours::white).withAlpha (0.06f));
-            g.fillRect (r.getX() + rnd.nextInt (r.getWidth()), r.getY() + rnd.nextInt (r.getHeight()), 2, 1);
-        }
-    };
-
-    bronze ({ 0, 0, fx, h }, true);
-    bronze ({ w - fx, 0, fx, h }, true);
-    bronze ({ fx, h - fh, w - 2 * fx, fh }, false);
-
+    // sides: dark stone pillars with a gold edge and faint glyph columns
     for (int side = 0; side < 2; ++side)
     {
-        const float cx = side == 0 ? (float) fx * 0.5f : (float) w - (float) fx * 0.5f;
-        for (int i = 0, y = 14; y < h - fh - 8; y += 36, ++i)
-            drawGlyph (g, i + side * 3, cx, (float) y + 14.0f, 20.0f, juce::Colour (0xff2b1807).withAlpha (0.9f));
+        juce::Rectangle<int> col (side == 0 ? 0 : w - fx, 14, fx, h - 14 - fh);
+        g.setGradientFill (juce::ColourGradient (juce::Colour (0xff120d07), (float) col.getX(), 0.0f,
+                                                 juce::Colour (0xff070504), (float) col.getRight(), 0.0f, false));
+        g.fillRect (col);
+        g.setColour (neon::bronze);
+        g.fillRect (side == 0 ? col.getRight() - 1 : col.getX(), col.getY(), 1, col.getHeight());
+        const float cx = (float) col.getCentreX();
+        for (int i = 0, y = 40; y < col.getBottom() - 12; y += 34, ++i)
+            drawGlyph (g, i + side * 3, cx, (float) y, 16.0f, neon::gold.withAlpha (0.32f));
     }
 
-    // footer: carved symbols + "Developed in Egypt" with lotus flowers
-    for (int i = 0, x = fx + 14; x < w - fx - 14; x += 34, ++i)
-        if (x < w / 2 - 120 || x > w / 2 + 120)
-            drawGlyph (g, i, (float) x, (float) h - (float) fh * 0.5f, 18.0f, juce::Colour (0xff2b1807).withAlpha (0.9f));
-
-    g.setColour (juce::Colour (0xff0b1018));
-    g.fillRoundedRectangle ((float) w * 0.5f - 112.0f, (float) h - (float) fh + 4.0f, 224.0f, (float) fh - 8.0f, 8.0f);
-    g.setColour (juce::Colour (0xffb8863a));
-    g.drawRoundedRectangle ((float) w * 0.5f - 112.0f, (float) h - (float) fh + 4.0f, 224.0f, (float) fh - 8.0f, 8.0f, 1.2f);
-    drawLotus (g, (float) w * 0.5f - 92.0f, (float) h - 8.0f, 20.0f);
-    drawLotus (g, (float) w * 0.5f + 92.0f, (float) h - 8.0f, 20.0f);
-    g.setColour (juce::Colour (0xfff2d88a));
-    g.setFont (uiFont (12.0f, false));
-    g.drawText ("Developed in Egypt", (int) ((float) w * 0.5f - 80.0f), h - fh + 4, 160, fh - 8, juce::Justification::centred, false);
-
-    // inner bronze edge around the content area
-    g.setColour (juce::Colour (0xffb8863a).withAlpha (0.9f));
-    g.drawRect (fx, hy, w - 2 * fx, h - hy - fh, 2);
-    g.setColour (juce::Colour (0xfff2c866).withAlpha (0.35f));
-    g.drawRect (fx + 2, hy + 2, w - 2 * fx - 4, h - hy - fh - 4, 1);
-}
-
-void NayAudioProcessorEditor::drawPanel (juce::Graphics& g, juce::Rectangle<int> ri, const juce::String& title, juce::Colour accent)
-{
-    auto r = ri.toFloat();
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff121e32).withAlpha (0.96f), 0.0f, r.getY(),
-                                             juce::Colour (0xff060a12).withAlpha (0.97f), 0.0f, r.getBottom(), false));
-    g.fillRoundedRectangle (r, 9.0f);
-    g.setColour (accent.withAlpha (0.30f));
-    g.drawRoundedRectangle (r.reduced (3.5f), 7.0f, 1.0f);
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xfff3d27a), r.getX(), r.getY(), juce::Colour (0xff6b4a14), r.getRight(), r.getBottom(), false));
-    g.drawRoundedRectangle (r.reduced (1.0f), 9.0f, 2.2f);
-    g.setColour (accent.withAlpha (0.10f));
-    g.drawRoundedRectangle (r.expanded (2.0f), 11.0f, 3.5f);
-    g.setColour (accent.withAlpha (0.55f));
-    g.fillRect (r.getX() + 36.0f, r.getY() + 1.5f, r.getWidth() - 72.0f, 1.2f);
-    g.setColour (accent.withAlpha (0.25f));
-    g.fillRect (r.getX() + 36.0f, r.getBottom() - 2.7f, r.getWidth() - 72.0f, 1.0f);
-    g.setColour (juce::Colours::white.withAlpha (0.018f));
-    for (float yy = r.getY() + 26.0f; yy < r.getBottom() - 6.0f; yy += 4.0f)
-        g.fillRect (r.getX() + 6.0f, yy, r.getWidth() - 12.0f, 1.0f);
-    for (auto p : { r.getTopLeft(), r.getTopRight(), r.getBottomLeft(), r.getBottomRight() })
+    // footer frieze + "Developed in Egypt" plate
     {
-        const float dx = p.x < r.getCentreX() ? 8.0f : -8.0f, dy = p.y < r.getCentreY() ? 8.0f : -8.0f;
-        g.setColour (juce::Colour (0xffd9aa4a));
-        g.fillEllipse (p.x + dx - 2.5f, p.y + dy - 2.5f, 5.0f, 5.0f);
+        juce::Rectangle<int> foot (fx, h - fh, w - 2 * fx, fh);
+        g.setGradientFill (juce::ColourGradient (juce::Colour (0xff100b06), 0.0f, (float) foot.getY(), juce::Colour (0xff050302), 0.0f, (float) h, false));
+        g.fillRect (foot);
+        g.setColour (neon::bronze);
+        g.fillRect (foot.getX(), foot.getY(), foot.getWidth(), 1);
+        for (int i = 0, x = fx + 16; x < w - fx - 14; x += 32, ++i)
+            if (x < w / 2 - 125 || x > w / 2 + 125)
+                drawGlyph (g, i, (float) x, (float) h - (float) fh * 0.5f, 15.0f, neon::gold.withAlpha (0.3f));
+        auto plate = juce::Rectangle<float> ((float) w * 0.5f - 112.0f, (float) h - (float) fh + 5.0f, 224.0f, (float) fh - 10.0f);
+        g.setColour (juce::Colour (0xff070504));
+        g.fillPath (chamfer (plate, 6.0f));
+        g.setColour (neon::gold);
+        g.strokePath (chamfer (plate, 6.0f), juce::PathStrokeType (1.2f));
+        drawLotus (g, plate.getX() + 20.0f, plate.getBottom() - 3.0f, 18.0f);
+        drawLotus (g, plate.getRight() - 20.0f, plate.getBottom() - 3.0f, 18.0f);
+        g.setColour (neon::gold);
+        g.setFont (uiFont (11.5f).withExtraKerningFactor (0.18f));
+        g.drawText ("DEVELOPED IN EGYPT", plate.toNearestInt(), juce::Justification::centred, false);
     }
 
-    g.setColour (accent);
-    const float L = 11.0f;
-    g.fillRect (r.getX(), r.getY(), L, 2.0f);                 g.fillRect (r.getX(), r.getY(), 2.0f, L);
-    g.fillRect (r.getRight() - L, r.getY(), L, 2.0f);         g.fillRect (r.getRight() - 2.0f, r.getY(), 2.0f, L);
-    g.fillRect (r.getX(), r.getBottom() - 2.0f, L, 2.0f);     g.fillRect (r.getX(), r.getBottom() - L, 2.0f, L);
-    g.fillRect (r.getRight() - L, r.getBottom() - 2.0f, L, 2.0f); g.fillRect (r.getRight() - 2.0f, r.getBottom() - L, 2.0f, L);
-
-    const auto tf = uiFont (11.5f).withExtraKerningFactor (0.08f);
-    juce::GlyphArrangement ga;
-    ga.addLineOfText (tf, title, 0.0f, 0.0f);
-    const float tw = juce::jmin ((float) ri.getWidth() - 28.0f, ga.getBoundingBox (0, -1, true).getWidth() + 18.0f);
-    juce::Rectangle<float> plate ((float) ri.getX() + 10.0f, (float) ri.getY() + 3.0f, tw, 19.0f);
-    g.setColour (juce::Colour (0xff070c16));
-    g.fillRoundedRectangle (plate, 5.0f);
-    g.setColour (juce::Colour (0xffb8863a));
-    g.drawRoundedRectangle (plate, 5.0f, 1.2f);
-    g.setFont (tf);
-    g.setColour (juce::Colour (0xfff2d88a));
-    g.drawText (title, plate.toNearestInt(), juce::Justification::centred, true);
+    // header separator: double gold line with diamonds
+    g.setColour (neon::gold.withAlpha (0.8f));
+    g.fillRect (fx, hy - 3, w - 2 * fx, 1);
+    g.setColour (neon::bronze);
+    g.fillRect (fx, hy - 1, w - 2 * fx, 1);
+    drawDiamond (g, (float) fx + 4.0f, (float) hy - 2.0f, 4.0f, neon::gold);
+    drawDiamond (g, (float) (w - fx) - 4.0f, (float) hy - 2.0f, 4.0f, neon::gold);
 }
 
+// panel: dark translucent glass, chamfered corners, double gold frame, corner diamonds, letter-spaced gold title
+void NayAudioProcessorEditor::drawPanel (juce::Graphics& g, juce::Rectangle<int> ri, const juce::String& title, juce::Colour)
+{
+    auto r = ri.toFloat().reduced (1.0f);
+    const float ch = 12.0f;
+
+    g.setColour (neon::gold.withAlpha (0.07f));                       // soft glow
+    g.strokePath (chamfer (r.expanded (2.5f), ch + 2.0f), juce::PathStrokeType (5.0f));
+
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff17110a).withAlpha (0.82f), 0.0f, r.getY(),
+                                             juce::Colour (0xff050403).withAlpha (0.82f), 0.0f, r.getBottom(), false));
+    g.fillPath (chamfer (r, ch));
+
+    g.setColour (neon::gold);                                         // outer gold frame
+    g.strokePath (chamfer (r, ch), juce::PathStrokeType (1.6f));
+    g.setColour (neon::bronze.brighter (0.25f));                      // inner bronze frame
+    g.strokePath (chamfer (r.reduced (4.0f), ch - 3.0f), juce::PathStrokeType (1.0f));
+
+    for (auto p : { r.getTopLeft(), r.getTopRight(), r.getBottomLeft(), r.getBottomRight() })
+        drawDiamond (g, p.x, p.y, 4.0f, neon::gold);
+
+    // indicator dots, top right (turquoise); narrow mixer strips get one dot and tighter title spacing
+    const bool narrow = ri.getWidth() < 160;
+    if (! narrow)
+        ledDot (g, juce::Rectangle<float> (r.getRight() - 30.0f, r.getY() + 11.0f, 5.0f, 5.0f), false);
+    ledDot (g, juce::Rectangle<float> (r.getRight() - 20.0f, r.getY() + 11.0f, 5.0f, 5.0f), true);
+
+    g.setFont (uiFont (narrow ? 10.5f : 11.5f).withExtraKerningFactor (narrow ? 0.12f : 0.42f));
+    g.setColour (neon::gold);
+    g.drawText (title, ri.getX() + (narrow ? 10 : 16), ri.getY() + 5, juce::jmax (40, ri.getWidth() - (narrow ? 34 : 60)), 16,
+                juce::Justification::centredLeft, true);
+}
+
+// LCD: black glass, chamfered gold frame, glowing gold text, scanlines, turquoise status dot
 void NayAudioProcessorEditor::drawLcd (juce::Graphics& g, juce::Rectangle<int> ri, const juce::String& tag,
                                        const juce::String& name, const juce::String& sub, juce::Colour accent)
 {
-    auto r = ri.toFloat();
-    g.setColour (juce::Colour (0xff070c16));
-    g.fillRoundedRectangle (r, 8.0f);
-    g.setColour (accent.withAlpha (0.18f));
-    g.drawRoundedRectangle (r.expanded (1.5f), 9.0f, 3.0f);
-    g.setColour (accent.withAlpha (0.85f));
-    g.drawRoundedRectangle (r.reduced (0.5f), 8.0f, 1.2f);
-
-    g.setColour (accent.withAlpha (0.07f));
+    auto r = ri.toFloat().reduced (1.0f);
+    const bool alert = accent == neon::magenta;
+    g.setColour (juce::Colour (0xff020101));
+    g.fillPath (chamfer (r, 8.0f));
+    g.setGradientFill (juce::ColourGradient (juce::Colours::white.withAlpha (0.05f), 0.0f, r.getY(),
+                                             juce::Colours::transparentWhite, 0.0f, r.getCentreY(), false));
+    g.fillPath (chamfer (r.reduced (2.0f), 7.0f));
+    g.setColour (juce::Colours::white.withAlpha (0.025f));
     for (float yy = r.getY() + 3.0f; yy < r.getBottom() - 3.0f; yy += 3.0f)
-        g.fillRect (r.getX() + 3.0f, yy, r.getWidth() - 6.0f, 1.0f);
+        g.fillRect (r.getX() + 4.0f, yy, r.getWidth() - 8.0f, 1.0f);
+    g.setColour (neon::gold.withAlpha (0.18f));
+    g.strokePath (chamfer (r.expanded (1.5f), 9.0f), juce::PathStrokeType (3.0f));
+    g.setColour (alert ? neon::magenta : neon::gold);
+    g.strokePath (chamfer (r, 8.0f), juce::PathStrokeType (1.6f));
+    g.setColour (neon::bronze);
+    g.strokePath (chamfer (r.reduced (3.5f), 6.0f), juce::PathStrokeType (0.8f));
 
-    auto inner = ri.reduced (38, 0);
-    g.setColour (accent.withAlpha (0.7f));
-    g.setFont (uiFont (10.0f).withExtraKerningFactor (0.2f));
+    ledDot (g, juce::Rectangle<float> (r.getX() + 32.0f, r.getCentreY() - 3.0f, 6.0f, 6.0f), name != "OFF");
+
+    auto inner = ri.reduced (40, 0);
+    g.setColour (neon::gold.withAlpha (0.6f));
+    g.setFont (uiFont (9.5f).withExtraKerningFactor (0.35f));
     g.drawText (tag, inner.getX(), ri.getY() + 5, inner.getWidth(), 12, juce::Justification::centred, false);
 
-    g.setColour (accent.withAlpha (0.2f));
-    g.setFont (uiFont (21.0f));
-    g.drawText (name, inner.translated (1, 1).withTrimmedTop (14).withTrimmedBottom (14), juce::Justification::centred, true);
-    g.setColour (accent.brighter (0.5f));
-    g.drawText (name, inner.withTrimmedTop (14).withTrimmedBottom (14), juce::Justification::centred, true);
+    const auto nf = uiFont (20.0f).withExtraKerningFactor (0.14f);
+    g.setFont (nf);
+    const auto txtCol = name == "OFF" ? neon::dim : juce::Colour (0xfff7d77e);
+    for (int d = 2; d >= 1; --d)
+    {   // glow
+        g.setColour (txtCol.withAlpha (0.08f));
+        g.drawText (name.toUpperCase(), inner.withTrimmedTop (14).withTrimmedBottom (14).expanded (d, d), juce::Justification::centred, true);
+    }
+    g.setColour (txtCol);
+    g.drawText (name.toUpperCase(), inner.withTrimmedTop (14).withTrimmedBottom (14), juce::Justification::centred, true);
 
-    g.setColour (neon::dim);
-    g.setFont (uiFont (10.5f, false));
-    g.drawText (sub, inner.getX(), ri.getBottom() - 17, inner.getWidth(), 12, juce::Justification::centred, true);
+    g.setColour (alert ? juce::Colour (0xffff9a80) : neon::dim);
+    g.setFont (uiFont (10.0f, false));
+    g.drawText (sub, inner.getX(), ri.getBottom() - 16, inner.getWidth(), 12, juce::Justification::centred, true);
 }
 
 void NayAudioProcessorEditor::paint (juce::Graphics& g)
 {
     g.drawImageAt (bgImage, 0, 0);
 
-    drawAnkh (g, 52.0f, 12.0f, 40.0f, neon::amber);
 
     // ---- MIDI monitor strip ----
     {
@@ -1892,14 +2426,16 @@ void NayAudioProcessorEditor::paint (juce::Graphics& g)
         }
 
         auto r = midiRect.toFloat();
-        g.setColour (juce::Colour (0xff070c16));
-        g.fillRoundedRectangle (r, 6.0f);
-        g.setColour (neon::amber.withAlpha (0.45f));
-        g.drawRoundedRectangle (r.reduced (0.5f), 6.0f, 1.0f);
+        g.setColour (juce::Colour (0xff030201));
+        g.fillPath (chamfer (r, 6.0f));
+        g.setColour (neon::gold.withAlpha (0.6f));
+        g.strokePath (chamfer (r.reduced (0.5f), 6.0f), juce::PathStrokeType (1.0f));
 
         const float age = (float) (juce::Time::getMillisecondCounter() - lastMonMs);
         const float act = juce::jlimit (0.0f, 1.0f, 1.0f - age / 400.0f);
-        g.setColour (neon::cyan.withAlpha (0.25f + 0.75f * act));
+        g.setColour (neon::led.withAlpha (0.2f * act));
+        g.fillEllipse (r.getX() + 7.0f, r.getCentreY() - 7.0f, 14.0f, 14.0f);
+        g.setColour (neon::led.withAlpha (0.25f + 0.75f * act));
         g.fillEllipse (r.getX() + 10.0f, r.getCentreY() - 4.0f, 8.0f, 8.0f);
 
         g.setColour (k == 0 ? neon::dim : neon::text);
@@ -1907,24 +2443,22 @@ void NayAudioProcessorEditor::paint (juce::Graphics& g)
         g.drawText (t, midiRect.withTrimmedLeft (28), juce::Justification::centredLeft, false);
     }
 
-    // futuristic title
-    auto f = juce::Font (juce::FontOptions ("Segoe UI", 30.0f, juce::Font::bold)).withExtraKerningFactor (0.3f);
+    // monumental title: Anubis head + winged sun + letter-spaced gold
+    drawAnubis (g, 38.0f, 14.0f, 52.0f, 1.0f, true);
+    drawWingedSun (g, 122.0f, 30.0f, 26.0f);
+    auto f = juce::Font (juce::FontOptions ("Segoe UI", 27.0f, juce::Font::bold)).withExtraKerningFactor (0.42f);
     g.setFont (f);
-    for (int d = 4; d >= 1; --d)
+    for (int d = 3; d >= 1; --d)
     {
-        g.setColour (neon::cyan.withAlpha (0.05f));
-        g.drawText ("EGYPTIAN SAMPLER", 92 - d, 8 - d, 540 + 2 * d, 36 + 2 * d, juce::Justification::centredLeft, false);
+        g.setColour (neon::gold.withAlpha (0.06f));
+        g.drawText ("EGYPTIAN", 158 - d, 12 - d, 330 + 2 * d, 32 + 2 * d, juce::Justification::centredLeft, false);
     }
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xfffbe9a8), 0.0f, 10.0f, juce::Colour (0xffc8962c), 0.0f, 44.0f, false));
-    g.drawText ("EGYPTIAN SAMPLER", 92, 8, 540, 36, juce::Justification::centredLeft, false);
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xfffbe7a6), 0.0f, 14.0f, juce::Colour (0xffb7832a), 0.0f, 42.0f, false));
+    g.drawText ("EGYPTIAN", 158, 12, 330, 32, juce::Justification::centredLeft, false);
 
-    g.setFont (uiFont (10.5f).withExtraKerningFactor (0.3f));
-    g.setColour (neon::cyan);
-    g.drawText ("MAQAM ENGINE  //  MICROTONAL SAMPLER", 94, 42, 520, 14, juce::Justification::centredLeft, false);
-    g.setColour (neon::cyan.withAlpha (0.5f));
-    g.fillRect (94, 58, 300, 1);
-    g.setColour (neon::cyan);
-    g.fillRect (94, 57, 40, 3);
+    g.setFont (uiFont (11.0f).withExtraKerningFactor (1.1f));
+    g.setColour (neon::gold.withAlpha (0.85f));
+    g.drawText ("SAMPLER", 160, 44, 330, 14, juce::Justification::centredLeft, false);
 }
 
 void NayAudioProcessorEditor::resized()
@@ -1989,17 +2523,24 @@ void NayAudioProcessorEditor::resized()
     }
 
     // ================= settings page (local coords) =================
-    lcdA2 = { 0, 0, 600, 60 };
+    lcdA2 = { 0, 0, 420, 60 };
     prevA2.setBounds (lcdA2.getX() + 8, 16, 20, 28);
     nextA2.setBounds (lcdA2.getRight() - 28, 16, 20, 28);
-    addButton.setBounds (616, 0, 150, 28);
-    renameButton.setBounds (616, 32, 150, 28);
-    info.setBounds (776, 0, 190, 60);
+    newInstBtn.setBounds (430, 0, 150, 28);
+    saveInstBtn.setBounds (430, 32, 150, 28);
+    addButton.setBounds (588, 0, 124, 28);
+    renameButton.setBounds (588, 32, 124, 28);
+    tVar->setBounds (720, 0, 120, 26);
+    info.setBounds (720, 28, 248, 34);
 
     mapView.setBounds (0, 68, 968, 524);
+    waveEd.setBounds (0, 68, 968, 524);
 
     pPerf = { 0, 362, 968, 132 };
-    tVar->setBounds (700, 18, 150, 24);
+    tOscOn->setBounds (14, pPerf.getY() + 30, 150, 28);
+    tOscOnly->setBounds (14, pPerf.getY() + 66, 150, 26);
+    oscWaveBox.setBounds (176, pPerf.getY() + 46, 150, 28);
+    layoutRow ({ 520, pPerf.getY() + 22, 440, 104 }, { kOscLvl, kOscTune, kOscFine, kOscCut });
     pArp = { 0, 502, 560, 90 };           // smaller
     pWheels = { 568, 502, 400, 90 };      // bigger: wheels + bend range + transpose + octave
     pitchWheel.setBounds (pWheels.getX() + 8, pWheels.getY() + 36, 28, 50);
@@ -2024,15 +2565,15 @@ void NayAudioProcessorEditor::resized()
     delPresetBtn.setBounds (754, 272, 214, 30);
     browseInfo.setBounds (754, 330, 214, 228);
 
-    // ================= mixer page: 8 channel strips =================
-    const int sw = 117, sg = 4;
-    for (int i = 0; i < 8; ++i)
+    // ================= mixer page: 9 channel strips =================
+    const int sw = 104, sg = 4;
+    for (int i = 0; i < 9; ++i)
         mixStrip[i] = { i * (sw + sg), 0, sw, 572 };
 
     auto placeFader = [&] (Knob* k, int i)
     {
-        const int fxp = i == 7 ? mixStrip[i].getX() + 6 : mixStrip[i].getX() + (sw - 76) / 2;
-        k->slider.setBounds (fxp, 68, 76, 292);
+        const int fxp = i == 8 ? mixStrip[i].getX() + 4 : mixStrip[i].getX() + (sw - 76) / 2;
+        k->slider.setBounds (fxp, 68, i == 8 ? 72 : 76, 292);
     };
     auto placeKnob = [&] (Knob* k, int i, int slot)
     {
@@ -2042,13 +2583,558 @@ void NayAudioProcessorEditor::resized()
 
     placeTog (tMainMute, 0); placeFader (kMainLvl, 0); placeKnob (kMainPan, 0, 0);
     placeTog (tDuoMute, 1);  placeFader (kDuoLvl, 1);  placeKnob (kDuoPan, 1, 0);
-    placeTog (tSat, 2);      placeFader (kSatMix, 2);
-    layoutRow ({ mixStrip[2].getX() + 14, 358, sw - 28, 68 }, { kSatDrive });
-    layoutRow ({ mixStrip[2].getX() + 14, 428, sw - 28, 68 }, { kSatTone });
-    layoutRow ({ mixStrip[2].getX() + 14, 498, sw - 28, 68 }, { kSatBass });
-    placeTog (tWah, 3);      placeFader (kWahMix, 3);  placeKnob (kWahPos, 3, 0);
-    placeTog (tPh, 4);       placeFader (kPhMix, 4);   placeKnob (kPhRate, 4, 0); placeKnob (kPhDepth, 4, 1);
-    placeFader (kDlLvl, 5);  placeKnob (kDlTime, 5, 0); placeKnob (kDlFb, 5, 1);
-    placeFader (kRvLvl, 6);  placeKnob (kRvSize, 6, 0);
-    placeFader (kMaster, 7);
+    placeTog (tOscSoloMix, 2); placeFader (kOscFader, 2); placeKnob (kOscPan, 2, 0);
+    tOscMuteMix->setBounds (mixStrip[2].getX() + 8, 466, sw - 16, 24);
+    tOscOnMix->setBounds (mixStrip[2].getX() + 8, 498, sw - 16, 24);
+    placeTog (tSat, 3);      placeFader (kSatMix, 3);
+    layoutRow ({ mixStrip[3].getX() + 14, 358, sw - 28, 68 }, { kSatDrive });
+    layoutRow ({ mixStrip[3].getX() + 14, 428, sw - 28, 68 }, { kSatTone });
+    layoutRow ({ mixStrip[3].getX() + 14, 498, sw - 28, 68 }, { kSatBass });
+    placeTog (tWah, 4);      placeFader (kWahMix, 4);  placeKnob (kWahPos, 4, 0);
+    placeTog (tPh, 5);       placeFader (kPhMix, 5);   placeKnob (kPhRate, 5, 0); placeKnob (kPhDepth, 5, 1);
+    placeFader (kDlLvl, 6);  placeKnob (kDlTime, 6, 0); placeKnob (kDlFb, 6, 1);
+    placeFader (kRvLvl, 7);  placeKnob (kRvSize, 7, 0);
+    placeFader (kMaster, 8);
+}
+
+//==============================================================================
+// WAVE EDITOR
+//==============================================================================
+WaveEditor::WaveEditor (NayAudioProcessor& p) : proc (p)
+{
+    listModel.getCount = [this]
+    {
+        auto b = proc.getBankOf (proc.getActiveGroup());
+        return b != nullptr ? (int) b->size() : 0;
+    };
+    listModel.getText = [this] (int r) -> juce::String
+    {
+        auto b = proc.getBankOf (proc.getActiveGroup());
+        if (b == nullptr || r < 0 || r >= (int) b->size())
+            return {};
+        const auto& s = *(*b)[(size_t) r];
+        return noteName (s.root.load()) + "   " + s.fileName;
+    };
+    listModel.onSelect = [this] (int r) { if (r != idx) selectRow (r); };
+    list.setModel (&listModel);
+    list.setRowHeight (24);
+    list.setColour (juce::ListBox::backgroundColourId, neon::panel.withAlpha (0.9f));
+    list.setColour (juce::ListBox::outlineColourId, neon::cyan.withAlpha (0.4f));
+    list.setOutlineThickness (1);
+    addAndMakeVisible (list);
+
+    auto setup = [this] (juce::TextButton& b, juce::Colour c, std::function<void()> fn)
+    {
+        b.setColour (juce::TextButton::buttonColourId, c);
+        b.onClick = std::move (fn);
+        addAndMakeVisible (b);
+    };
+    setup (backBtn, neon::amber, [this] { proc.stopPreview(); playBtn.setButtonText ("PLAY"); if (onClose) onClose(); });
+    setup (playBtn, neon::green, [this]
+    {
+        if (proc.isPreviewing()) { proc.stopPreview(); playBtn.setButtonText ("PLAY"); }
+        else if (auto s = current()) { proc.startPreview (s); playBtn.setButtonText ("STOP"); }
+    });
+    setup (undoBtn, neon::violet, [this]
+    {
+        if (undo.empty()) return;
+        auto u = undo.back();
+        undo.pop_back();
+        proc.replaceSample (group, u.first, u.second);
+        idx = u.first;
+        selA = selB = -1;
+        if (auto s = current()) setView (viewStart, juce::jmin (viewLen, (double) s->data.getNumSamples()));
+        edited ("Undo");
+    });
+    setup (saveBtn, neon::green, [this]
+    {
+        const bool ok = proc.saveInstrument (group);
+        if (onChanged) onChanged (ok ? "Saved:  " + proc.getGroupPath (group) : "SAVE FAILED");
+        repaint();
+    });
+    setup (zoomSelBtn, neon::cyan, [this]
+    {
+        if (selA >= 0 && selB != selA)
+            setView (juce::jmin (selA, selB), std::abs (selB - selA));
+    });
+    setup (zoomAllBtn, neon::cyan, [this] { if (auto s = current()) setView (0, s->data.getNumSamples()); });
+
+    setup (delBtn,  neon::magenta, [this] { doOp (WaveOp::Delete); });
+    setup (trimBtn, neon::magenta, [this] { doOp (WaveOp::Trim); });
+    setup (silBtn,  neon::magenta, [this] { doOp (WaveOp::Silence); });
+    setup (finBtn,  neon::amber,   [this] { doOp (WaveOp::FadeIn); });
+    setup (foutBtn, neon::amber,   [this] { doOp (WaveOp::FadeOut); });
+    setup (normBtn, neon::amber,   [this] { doOp (WaveOp::Normalize); });
+    setup (revBtn,  neon::amber,   [this] { doOp (WaveOp::Reverse); });
+
+    setup (loopSelBtn, neon::green, [this]
+    {
+        auto s = current();
+        if (s == nullptr || selA < 0 || std::abs (selB - selA) < 64)
+        {
+            if (onChanged) onChanged ("Select a part of the wave first (drag on it), then LOOP = SELECTION");
+            return;
+        }
+        pushUndo();
+        const int a = snapZero (*s, juce::jmin (selA, selB)), b = snapZero (*s, juce::jmax (selA, selB));
+        if (b - a < 64) return;
+        s->loopStart = a;
+        s->loopEnd = b - 1;
+        const int xf = juce::jmin ((int) (s->sampleRate * 0.1), (b - a) / 4, a);
+        s->xfade = juce::jmax (0, xf);
+        edited ("Loop set from the selection (crossfade " + juce::String ((int) (s->xfade.load() * 1000.0 / s->sampleRate)) + " ms)");
+    });
+    setup (autoLoopBtn, neon::green, [this]
+    {
+        auto s = current();
+        if (s == nullptr) return;
+        pushUndo();
+        const int before = s->loopStart.load(), beforeE = s->loopEnd.load();
+        NayAudioProcessor::autoLoop (*s);
+        const bool changed = s->loopStart.load() != before || s->loopEnd.load() != beforeE;
+        edited (changed ? "AUTO LOOP: loop + crossfade set in the sustain - press PLAY to hear it"
+                        : "AUTO LOOP: no better loop found (sample too short?)");
+    });
+    setup (clearLoopBtn, neon::dim, [this]
+    {
+        auto s = current();
+        if (s == nullptr) return;
+        pushUndo();
+        s->loopStart = -1; s->loopEnd = -1; s->xfade = -1;
+        edited ("Loop cleared (the engine loops the 2nd half)");
+    });
+
+    xfSlider.setSliderStyle (juce::Slider::LinearHorizontal);
+    xfSlider.setRange (0.0, 300.0, 1.0);
+    xfSlider.setTextBoxStyle (juce::Slider::TextBoxRight, false, 64, 22);
+    xfSlider.setTextValueSuffix (" ms");
+    xfSlider.setColour (juce::Slider::thumbColourId, neon::green);
+    xfSlider.setColour (juce::Slider::trackColourId, neon::green.withAlpha (0.5f));
+    xfSlider.setColour (juce::Slider::textBoxTextColourId, neon::text);
+    xfSlider.setColour (juce::Slider::textBoxOutlineColourId, juce::Colours::transparentBlack);
+    xfSlider.onDragStart = [this] { pushUndo(); };
+    xfSlider.onValueChange = [this]
+    {
+        if (auto s = current())
+        {
+            s->xfade = (int) (xfSlider.getValue() * 0.001 * s->sampleRate);
+            proc.markDirty (group);
+            repaint();
+        }
+    };
+    addAndMakeVisible (xfSlider);
+    xfLabel.setText ("LOOP CROSSFADE", juce::dontSendNotification);
+    xfLabel.setFont (uiFont (11.0f));
+    xfLabel.setColour (juce::Label::textColourId, neon::dim);
+    addAndMakeVisible (xfLabel);
+
+    hbar.setAutoHide (false);
+    hbar.addListener (this);
+    hbar.setColour (juce::ScrollBar::thumbColourId, neon::cyan.withAlpha (0.6f));
+    addAndMakeVisible (hbar);
+}
+
+WaveEditor::~WaveEditor()
+{
+    hbar.removeListener (this);
+    list.setModel (nullptr);
+}
+
+std::shared_ptr<NaySample> WaveEditor::current() const
+{
+    auto b = proc.getBankOf (group);
+    if (b == nullptr || idx < 0 || idx >= (int) b->size())
+        return nullptr;
+    return (*b)[(size_t) idx];
+}
+
+void WaveEditor::open (int sampleIndex)
+{
+    if (group != proc.getActiveGroup())
+        undo.clear();
+    group = proc.getActiveGroup();
+    list.updateContent();
+    idx = -1;
+    selectRow (juce::jmax (0, sampleIndex));
+}
+
+void WaveEditor::selectRow (int i)
+{
+    idx = i;
+    selA = selB = -1;
+    list.selectRow (i, false, true);
+    if (auto s = current())
+        setView (0, s->data.getNumSamples());
+    if (proc.isPreviewing())
+    {
+        if (auto s = current()) proc.startPreview (s);
+    }
+    updateControls();
+    repaint();
+}
+
+void WaveEditor::updateControls()
+{
+    auto s = current();
+    const int xs = s != nullptr ? s->xfade.load() : -1;
+    xfSlider.setValue (s != nullptr && xs >= 0 ? xs * 1000.0 / s->sampleRate : 0.0, juce::dontSendNotification);
+    for (juce::Component* c : std::initializer_list<juce::Component*> { &playBtn, &delBtn, &trimBtn, &silBtn, &finBtn, &foutBtn, &normBtn, &revBtn,
+                                                                         &loopSelBtn, &autoLoopBtn, &clearLoopBtn, &xfSlider, &zoomSelBtn, &zoomAllBtn })
+        c->setEnabled (s != nullptr);
+    undoBtn.setEnabled (! undo.empty());
+    saveBtn.setEnabled (group >= 0);
+}
+
+void WaveEditor::pushUndo()
+{
+    if (auto s = current())
+    {
+        undo.push_back ({ idx, NayAudioProcessor::cloneSample (*s) });
+        if (undo.size() > 40)
+            undo.erase (undo.begin());
+    }
+}
+
+void WaveEditor::edited (const juce::String& msg)
+{
+    proc.markDirty (group);
+    list.updateContent();
+    list.repaint();
+    updateControls();
+    cFor = nullptr;
+    repaint();
+    if (onChanged) onChanged (msg);
+}
+
+void WaveEditor::doOp (WaveOp op)
+{
+    auto s = current();
+    if (s == nullptr)
+        return;
+    int a = juce::jmin (selA, selB), b = juce::jmax (selA, selB);
+    const bool hasSel = selA >= 0 && b - a >= 2;
+    if (! hasSel && op != WaveOp::Normalize && op != WaveOp::Reverse)
+    {
+        if (onChanged) onChanged ("Drag on the wave to select a part first");
+        return;
+    }
+    if (! hasSel) { a = 0; b = s->data.getNumSamples(); }
+
+    auto ns = NayAudioProcessor::applyWaveOp (*s, op, a, b);
+    if (ns == nullptr)
+    {
+        if (onChanged) onChanged ("Not possible on this selection");
+        return;
+    }
+    undo.push_back ({ idx, s });
+    if (undo.size() > 40) undo.erase (undo.begin());
+    proc.replaceSample (group, idx, ns);
+    if (proc.isPreviewing()) proc.startPreview (ns);
+
+    const int len = ns->data.getNumSamples();
+    if (op == WaveOp::Delete)    { selA = selB = juce::jmin (a, len - 1); }
+    else if (op == WaveOp::Trim) { selA = selB = -1; setView (0, len); }
+    setView (viewStart, viewLen);
+
+    static const char* names[] = { "Deleted the selection", "Trimmed to the selection", "Fade in", "Fade out", "Normalized", "Silenced", "Reversed" };
+    edited (juce::String (names[(int) op]) + "  -  UNDO to go back, SAVE to keep");
+}
+
+void WaveEditor::setView (double start, double len)
+{
+    auto s = current();
+    const double total = s != nullptr ? (double) s->data.getNumSamples() : 1.0;
+    viewLen = juce::jlimit (juce::jmin (64.0, total), total, len);
+    viewStart = juce::jlimit (0.0, juce::jmax (0.0, total - viewLen), start);
+    hbar.setRangeLimits (0.0, total, juce::dontSendNotification);
+    hbar.setCurrentRange (viewStart, viewLen, juce::dontSendNotification);
+    repaint();
+}
+
+void WaveEditor::scrollBarMoved (juce::ScrollBar*, double newRangeStart)
+{
+    viewStart = newRangeStart;
+    repaint();
+}
+
+int WaveEditor::xToPos (float x) const
+{
+    auto s = current();
+    const int len = s != nullptr ? s->data.getNumSamples() : 1;
+    const double p = viewStart + (double) (x - (float) waveArea.getX()) / waveArea.getWidth() * viewLen;
+    return juce::jlimit (0, len, (int) std::lround (p));
+}
+
+float WaveEditor::posToX (double p) const
+{
+    return (float) waveArea.getX() + (float) ((p - viewStart) / viewLen * waveArea.getWidth());
+}
+
+void WaveEditor::loopBounds (const NaySample& s, int& ls, int& le) const
+{
+    const int len = s.data.getNumSamples();
+    ls = s.loopStart.load(); le = s.loopEnd.load();
+    if (! (ls >= 0 && le > ls + 8 && le < len)) { ls = len / 2; le = len - 2; }
+}
+
+int WaveEditor::snapZero (const NaySample& s, int pos) const
+{
+    const int len = s.data.getNumSamples();
+    const float* x = s.data.getReadPointer (0);
+    const int range = juce::jmax (32, (int) (viewLen / juce::jmax (1, waveArea.getWidth()) * 6.0));
+    for (int d = 0; d < range; ++d)
+        for (int c : { pos - d, pos + d })
+            if (c > 0 && c < len - 1 && x[c - 1] <= 0.0f && x[c] > 0.0f)
+                return c;
+    return juce::jlimit (0, juce::jmax (0, len - 1), pos);
+}
+
+void WaveEditor::resized()
+{
+    auto r = getLocalBounds();
+    list.setBounds (r.removeFromLeft (210).withTrimmedBottom (0));
+    r.removeFromLeft (10);
+
+    auto row = [&r] (int h) { auto a = r.removeFromTop (h); r.removeFromTop (6); return a; };
+    auto place = [] (juce::Rectangle<int> a, std::initializer_list<juce::Component*> cs, int gap = 6)
+    {
+        const int n = (int) cs.size();
+        const int w = (a.getWidth() - gap * (n - 1)) / n;
+        int i = 0;
+        for (auto* c : cs) c->setBounds (a.getX() + i++ * (w + gap), a.getY(), w, a.getHeight());
+    };
+    place (row (28), { &backBtn, &playBtn, &undoBtn, &saveBtn, &zoomSelBtn, &zoomAllBtn });
+    place (row (28), { &delBtn, &trimBtn, &silBtn, &finBtn, &foutBtn, &normBtn, &revBtn });
+    {
+        auto a = row (28);
+        loopSelBtn.setBounds (a.removeFromLeft (150));   a.removeFromLeft (6);
+        autoLoopBtn.setBounds (a.removeFromLeft (110));  a.removeFromLeft (6);
+        clearLoopBtn.setBounds (a.removeFromLeft (150)); a.removeFromLeft (12);
+        xfLabel.setBounds (a.removeFromLeft (110));
+        xfSlider.setBounds (a);
+    }
+    statusArea = r.removeFromBottom (18);
+    hbar.setBounds (r.removeFromBottom (14));
+    r.removeFromBottom (4);
+    waveArea = r;
+    cFor = nullptr;
+}
+
+void WaveEditor::paint (juce::Graphics& g)
+{
+    g.setColour (neon::bg0.withAlpha (0.96f));
+    g.fillRect (getLocalBounds());
+
+    g.setColour (juce::Colour (0xff030201));
+    g.fillRect (waveArea);
+    g.setColour (neon::cyan.withAlpha (0.45f));
+    g.drawRect (waveArea, 1);
+
+    auto s = current();
+    if (s == nullptr)
+    {
+        g.setColour (neon::dim);
+        g.setFont (uiFont (15.0f));
+        g.drawText ("No sample - drop WAV files on the mapping first", waveArea, juce::Justification::centred, false);
+        return;
+    }
+
+    const int len = s->data.getNumSamples(), nc = s->data.getNumChannels();
+    const int w = waveArea.getWidth();
+
+    // selection + loop shading
+    int ls, le;
+    loopBounds (*s, ls, le);
+    const bool ownLoop = s->loopStart.load() >= 0;
+    {
+        const float x0 = posToX (ls), x1 = posToX (le + 1);
+        g.setColour (neon::green.withAlpha (ownLoop ? 0.13f : 0.06f));
+        g.fillRect (juce::Rectangle<float> (x0, (float) waveArea.getY(), x1 - x0, (float) waveArea.getHeight()).getIntersection (waveArea.toFloat()));
+        const int xs = s->xfade.load();
+        if (ownLoop && xs > 0)
+        {   // crossfade zone (before the loop end)
+            const float xa = posToX (le + 1 - xs);
+            g.setColour (neon::amber.withAlpha (0.16f));
+            g.fillRect (juce::Rectangle<float> (xa, (float) waveArea.getY(), x1 - xa, (float) waveArea.getHeight()).getIntersection (waveArea.toFloat()));
+        }
+    }
+    if (selA >= 0 && selB != selA)
+    {
+        const float x0 = posToX (juce::jmin (selA, selB)), x1 = posToX (juce::jmax (selA, selB));
+        g.setColour (neon::violet.withAlpha (0.35f));
+        g.fillRect (juce::Rectangle<float> (x0, (float) waveArea.getY(), x1 - x0, (float) waveArea.getHeight()).getIntersection (waveArea.toFloat()));
+    }
+
+    // waveform (one lane per channel), cached min / max per pixel
+    if (cFor != s.get() || cStart != viewStart || cLen != viewLen || cW != w)
+    {
+        cFor = s.get(); cStart = viewStart; cLen = viewLen; cW = w;
+        cMin.assign ((size_t) (w * nc), 0.0f);
+        cMax.assign ((size_t) (w * nc), 0.0f);
+        for (int ch = 0; ch < nc; ++ch)
+        {
+            const float* x = s->data.getReadPointer (ch);
+            for (int px = 0; px < w; ++px)
+            {
+                const int a = juce::jlimit (0, len, (int) (viewStart + (double) px / w * viewLen));
+                const int b = juce::jlimit (a + 1, juce::jmax (a + 1, len), (int) (viewStart + (double) (px + 1) / w * viewLen));
+                float mn = 1.0f, mx = -1.0f;
+                for (int i = a; i < b && i < len; ++i) { mn = juce::jmin (mn, x[i]); mx = juce::jmax (mx, x[i]); }
+                if (mx < mn) mn = mx = 0.0f;
+                cMin[(size_t) (ch * w + px)] = mn;
+                cMax[(size_t) (ch * w + px)] = mx;
+            }
+        }
+    }
+    const float laneH = (float) waveArea.getHeight() / (float) nc;
+    for (int ch = 0; ch < nc; ++ch)
+    {
+        const float cy = (float) waveArea.getY() + laneH * ((float) ch + 0.5f), hh = laneH * 0.46f;
+        g.setColour (juce::Colours::white.withAlpha (0.08f));
+        g.fillRect ((float) waveArea.getX(), cy, (float) w, 1.0f);
+        g.setColour (neon::cyan.withAlpha (0.9f));
+        const bool dots = viewLen < w * 0.5;          // zoomed in a lot: draw a line
+        if (dots)
+        {
+            juce::Path p;
+            const float* x = s->data.getReadPointer (ch);
+            for (int i = (int) viewStart; i <= juce::jmin (len - 1, (int) (viewStart + viewLen) + 1); ++i)
+            {
+                const float px = posToX (i), py = cy - x[i] * hh;
+                if (i == (int) viewStart) p.startNewSubPath (px, py); else p.lineTo (px, py);
+            }
+            g.strokePath (p, juce::PathStrokeType (1.4f));
+        }
+        else
+            for (int px = 0; px < w; ++px)
+            {
+                const float mn = cMin[(size_t) (ch * w + px)], mx = cMax[(size_t) (ch * w + px)];
+                g.fillRect ((float) (waveArea.getX() + px), cy - mx * hh, 1.0f, juce::jmax (1.0f, (mx - mn) * hh));
+            }
+    }
+
+    // loop markers
+    for (int k = 0; k < 2; ++k)
+    {
+        const float mx = posToX (k == 0 ? ls : le + 1);
+        if (mx < (float) waveArea.getX() - 1.0f || mx > (float) waveArea.getRight() + 1.0f)
+            continue;
+        g.setColour (ownLoop ? neon::green : neon::dim);
+        g.fillRect (mx - 1.0f, (float) waveArea.getY(), 2.0f, (float) waveArea.getHeight());
+        juce::Path tri;
+        tri.addTriangle (mx - 7.0f, (float) waveArea.getY(), mx + 7.0f, (float) waveArea.getY(), mx, (float) waveArea.getY() + 11.0f);
+        g.fillPath (tri);
+        g.setFont (uiFont (10.0f));
+        g.drawText (k == 0 ? "LOOP START" : "LOOP END", (int) mx + (k == 0 ? 4 : -74), waveArea.getY() + 2, 70, 12,
+                    k == 0 ? juce::Justification::centredLeft : juce::Justification::centredRight, false);
+    }
+
+    // status line
+    auto secs = [&] (double n) { return juce::String (n / s->sampleRate, 3) + " s"; };
+    juce::String st = s->fileName + "   |   " + noteName (s->root.load()) + "   |   " + secs (len)
+                    + (nc > 1 ? "  stereo" : "  mono") + "   |   loop " + (ownLoop ? secs (ls) + " - " + secs (le + 1) : juce::String ("default"));
+    if (selA >= 0 && selB != selA)
+        st << "   |   selection " << secs (juce::jmin (selA, selB)) << " - " << secs (juce::jmax (selA, selB))
+           << "  (" << secs (std::abs (selB - selA)) << ")";
+    if (proc.isDirty (group))
+        st << "   |   * UNSAVED";
+    g.setColour (neon::text.withAlpha (0.85f));
+    g.setFont (uiFont (11.0f, false));
+    g.drawText (st, statusArea, juce::Justification::centredLeft, true);
+
+    g.setColour (neon::dim);
+    g.setFont (uiFont (10.0f, false));
+    g.drawText ("drag = select   |   wheel = zoom   |   shift+wheel = scroll   |   drag the green markers = loop   |   double-click = select all",
+                waveArea.reduced (8, 4), juce::Justification::bottomLeft, false);
+}
+
+void WaveEditor::mouseMove (const juce::MouseEvent& e)
+{
+    auto s = current();
+    if (s == nullptr || ! waveArea.contains (e.getPosition())) { setMouseCursor (juce::MouseCursor::NormalCursor); return; }
+    int ls, le;
+    loopBounds (*s, ls, le);
+    const bool near = std::abs (e.position.x - posToX (ls)) < 7.0f || std::abs (e.position.x - posToX (le + 1)) < 7.0f;
+    setMouseCursor (near ? juce::MouseCursor::LeftRightResizeCursor : juce::MouseCursor::IBeamCursor);
+}
+
+void WaveEditor::mouseDown (const juce::MouseEvent& e)
+{
+    dragMode = 0;
+    auto s = current();
+    if (s == nullptr || ! waveArea.contains (e.getPosition()))
+        return;
+
+    int ls, le;
+    loopBounds (*s, ls, le);
+    const float ds = std::abs (e.position.x - posToX (ls)), de = std::abs (e.position.x - posToX (le + 1));
+    if (ds < 7.0f || de < 7.0f)
+    {
+        pushUndo();
+        dragMode = ds <= de ? 2 : 3;
+        s->loopStart = ls;
+        s->loopEnd = le;
+        if (s->xfade.load() < 0) s->xfade = juce::jmin ((int) (s->sampleRate * 0.05), ls, (le - ls) / 4);
+        return;
+    }
+    dragMode = 1;
+    selA = selB = xToPos (e.position.x);
+    repaint();
+}
+
+void WaveEditor::mouseDrag (const juce::MouseEvent& e)
+{
+    auto s = current();
+    if (s == nullptr)
+        return;
+    const int len = s->data.getNumSamples();
+
+    if (dragMode == 1)
+    {
+        selB = xToPos (juce::jlimit ((float) waveArea.getX(), (float) waveArea.getRight(), e.position.x));
+        repaint();
+    }
+    else if (dragMode == 2 || dragMode == 3)
+    {
+        const int pos = snapZero (*s, xToPos (e.position.x));
+        if (dragMode == 2) s->loopStart = juce::jlimit (0, s->loopEnd.load() - 64, pos);
+        else               s->loopEnd = juce::jlimit (s->loopStart.load() + 64, len - 2, pos - 1);
+        s->xfade = juce::jmin (s->xfade.load(), s->loopStart.load(), (s->loopEnd.load() - s->loopStart.load()) / 2);
+        proc.markDirty (group);
+        repaint();
+    }
+}
+
+void WaveEditor::mouseUp (const juce::MouseEvent&)
+{
+    if (dragMode == 2 || dragMode == 3)
+        edited ("Loop moved - press PLAY to hear it");
+    dragMode = 0;
+}
+
+void WaveEditor::mouseDoubleClick (const juce::MouseEvent& e)
+{
+    if (auto s = current())
+        if (waveArea.contains (e.getPosition()))
+        {
+            selA = 0;
+            selB = s->data.getNumSamples();
+            repaint();
+        }
+}
+
+void WaveEditor::mouseWheelMove (const juce::MouseEvent& e, const juce::MouseWheelDetails& w)
+{
+    if (current() == nullptr || ! waveArea.contains (e.getPosition()))
+        return;
+    if (e.mods.isShiftDown() || std::abs (w.deltaX) > std::abs (w.deltaY))
+    {
+        const float d = std::abs (w.deltaX) > std::abs (w.deltaY) ? w.deltaX : w.deltaY;
+        setView (viewStart - (double) d * viewLen * 0.5, viewLen);
+        return;
+    }
+    const double anchor = viewStart + (double) (e.position.x - (float) waveArea.getX()) / waveArea.getWidth() * viewLen;
+    const double f = w.deltaY > 0 ? 0.7 : 1.0 / 0.7;
+    const double nl = viewLen * f;
+    setView (anchor - (anchor - viewStart) * f, nl);
 }

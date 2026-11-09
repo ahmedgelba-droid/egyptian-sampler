@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-project(EgyptianSampler VERSION 0.2.0)
+project(EgyptianSampler VERSION 0.3.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -27,6 +27,9 @@ juce_add_plugin(EgyptianSampler
 target_sources(EgyptianSampler PRIVATE
     PluginProcessor.cpp
     PluginEditor.cpp)
+
+# Visual Studio: the green Start button runs the Standalone app
+set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT EgyptianSampler_Standalone)
 
 
 # ---- ASIO support (Standalone): downloads the Steinberg ASIO SDK if reachable ----
@@ -60,3 +63,12 @@ target_link_libraries(EgyptianSampler
         juce::juce_recommended_config_flags
         juce::juce_recommended_lto_flags
         juce::juce_recommended_warning_flags)
+
+# ---- optional tests (cmake -DEGY_TESTS=ON): user-instrument round trip ----
+option(EGY_TESTS "Build the Egyptian Sampler test program" OFF)
+if(EGY_TESTS)
+    juce_add_console_app(EgyptianSamplerTests PRODUCT_NAME "EgyptianSamplerTests")
+    target_sources(EgyptianSamplerTests PRIVATE tests/InstrumentTests.cpp PluginProcessor.cpp PluginEditor.cpp)
+    target_compile_definitions(EgyptianSamplerTests PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_ASIO=0)
+    target_link_libraries(EgyptianSamplerTests PRIVATE juce::juce_audio_utils PUBLIC juce::juce_recommended_config_flags)
+endif()
