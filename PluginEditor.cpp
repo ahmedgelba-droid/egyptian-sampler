@@ -588,37 +588,86 @@ void NoteKey::mouseUp (const juce::MouseEvent&)
 
 void NoteKey::paint (juce::Graphics& g)
 {
+    // Yamaha "SCALE TUNE" style button: dark key with an LED bar on top (red = lowered, white = raised, dark = normal)
     const float eff = effective();
-    const bool alt = std::abs (eff) > 0.5f;
-    const auto led = alt ? juce::Colour (0xffff3b2f) : juce::Colour (0xff2fa8ff);
-    const float cx = (float) getWidth() * 0.5f, cy = 31.0f;
+    const bool lowered = eff < -0.5f, raised = eff > 0.5f;
+    const float w = (float) getWidth();
+    const juce::Rectangle<float> r (3.0f, 13.0f, w - 6.0f, 36.0f);
 
     g.setColour (neon::text);
     g.setFont (uiFont (13.0f));
     g.drawText (kNames[pc], 0, 0, getWidth(), 13, juce::Justification::centred, false);
 
-    if (alt)
-    {
-        g.setColour (led.withAlpha (0.25f));
-        g.fillEllipse (cx - 21.0f, cy - 21.0f, 42.0f, 42.0f);
-    }
-    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff6a5430), cx - 8.0f, cy - 12.0f, juce::Colour (0xff0b1018), cx + 10.0f, cy + 17.0f, false));
-    g.fillEllipse (cx - 17.0f, cy - 17.0f, 34.0f, 34.0f);
-    g.setColour (neon::amber.withAlpha (0.55f));
-    g.drawEllipse (cx - 17.0f, cy - 17.0f, 34.0f, 34.0f, 1.5f);
-    g.setColour (juce::Colour (0xff070c16));
-    g.fillEllipse (cx - 11.0f, cy - 11.0f, 22.0f, 22.0f);
-    g.setColour (led);
-    g.drawEllipse (cx - 11.0f, cy - 11.0f, 22.0f, 22.0f, 1.5f);
-    g.fillEllipse (cx - 5.0f, cy - 5.0f, 10.0f, 10.0f);
+    g.setColour (juce::Colours::black);
+    g.fillRoundedRectangle (r.translated (0.0f, 2.0f), 5.0f);
+    g.setGradientFill (juce::ColourGradient (juce::Colour (0xff343b46), 0.0f, r.getY(), juce::Colour (0xff10141a), 0.0f, r.getBottom(), false));
+    g.fillRoundedRectangle (r, 5.0f);
+    g.setColour (juce::Colour (0xff4a5565));
+    g.drawRoundedRectangle (r.reduced (0.5f), 5.0f, 1.0f);
 
-    g.setColour (alt ? juce::Colour (0xffff7a6a) : neon::dim);
+    const juce::Rectangle<float> led (r.getCentreX() - 17.0f, r.getY() + 6.0f, 34.0f, 7.0f);
+    if (lowered || raised)
+    {
+        const auto lc = lowered ? juce::Colour (0xffff3b2a) : juce::Colours::white;
+        g.setColour (lc.withAlpha (0.35f));
+        g.fillRoundedRectangle (led.expanded (4.0f, 3.0f), 4.0f);
+        g.setGradientFill (juce::ColourGradient (lc.brighter (0.4f), 0.0f, led.getY(), lc, 0.0f, led.getBottom(), false));
+        g.fillRoundedRectangle (led, 2.0f);
+    }
+    else
+    {
+        g.setColour (juce::Colour (0xff2a1416));
+        g.fillRoundedRectangle (led, 2.0f);
+    }
+
+    g.setColour (lowered ? juce::Colour (0xffff7a6a) : raised ? juce::Colours::white : neon::dim);
     g.setFont (uiFont (12.0f));
     const int v = (int) std::round (eff);
-    g.drawText ((v > 0 ? "+" : "") + juce::String (v), 0, 49, getWidth(), 13, juce::Justification::centred, false);
+    g.drawText ((v > 0 ? "+" : "") + juce::String (v), r.toNearestInt().withTrimmedTop (18), juce::Justification::centred, false);
 }
 
 //==============================================================================
+void NayAudioProcessorEditor::applyMaqam (int idx)
+{
+    // tonic = C (move it with TRANSPOSE: the quarter tones travel with the scale)
+    float cents[12] {};
+    if (idx == 2 || idx == 5) { cents[4] = -50.0f; cents[11] = -50.0f; }       // Rast / Sika: E and B
+    if (idx == 3 || idx == 4) { cents[4] = -50.0f; }                           // Bayati / Saba: E
+    if (idx <= 1) return;
+    for (int i = 0; i < 12; ++i)
+        if (auto* q = proc.apvts.getParameter ("off" + juce::String (i)))
+        {
+            q->beginChangeGesture();
+            q->setValueNotifyingHost (q->convertTo0to1 (cents[i]));
+            q->endChangeGesture();
+        }
+}
+
+void NayAudioProcessorEditor::storeScale (int slot)
+{
+    juce::StringArray s;
+    for (int i = 0; i < 12; ++i)
+        if (auto* q = proc.apvts.getParameter ("off" + juce::String (i)))
+            s.add (juce::String ((int) std::round (q->convertFrom0to1 (q->getValue()))));
+    proc.apvts.state.setProperty ("scaleMem" + juce::String (slot), s.joinIntoString (","), nullptr);
+}
+
+void NayAudioProcessorEditor::recallScale (int slot)
+{
+    const auto t = proc.apvts.state.getProperty ("scaleMem" + juce::String (slot)).toString();
+    if (t.isEmpty())
+        return;
+    juce::StringArray s;
+    s.addTokens (t, ",", "");
+    for (int i = 0; i < 12 && i < s.size(); ++i)
+        if (auto* q = proc.apvts.getParameter ("off" + juce::String (i)))
+        {
+            q->beginChangeGesture();
+            q->setValueNotifyingHost (q->convertTo0to1 ((float) s[i].getIntValue()));
+            q->endChangeGesture();
+        }
+}
+
 static void drawAnkh (juce::Graphics& g, float x, float y, float h, juce::Colour c)
 {
     g.setColour (c);
@@ -636,6 +685,7 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     addChildComponent (settings);
     addChildComponent (browse);
     addChildComponent (mixer);
+    addChildComponent (voiceEd);
     settings.addAndMakeVisible (mapView);
 
     const auto tq = neon::cyan, cr = neon::magenta, gd = neon::amber, pp = neon::green, lp = neon::violet;
@@ -651,6 +701,36 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     tMono   = addToggle (page, P_mono,   "MONO",   tq);
     tLegato = addToggle (page, P_legato, "LEGATO", tq);
     tVar = addToggle (page, P_varOn, "NOTE VARIATION  (random neighbour sample)", pp);
+
+    // ---- scale tune: maqam presets, memory 1-5, bypass ----
+    tBypass = addToggle (page, P_tuneBypass, "BYPASS (12-TET)", gd);
+    maqamBox.addItem ("MAQAM: none", 1);
+    maqamBox.addItem ("Rast  (E, B quarter-flat)", 2);
+    maqamBox.addItem ("Bayati  (E quarter-flat)", 3);
+    maqamBox.addItem ("Saba  (E quarter-flat)", 4);
+    maqamBox.addItem ("Sika / Segah  (E, B)", 5);
+    maqamBox.addItem ("Hijaz / Nahawand  (no quarter)", 6);
+    maqamBox.setSelectedId (1, juce::dontSendNotification);
+    maqamBox.onChange = [this] { applyMaqam (maqamBox.getSelectedId()); };
+    page.addAndMakeVisible (maqamBox);
+    memStoreBtn.setColour (juce::TextButton::buttonColourId, neon::magenta);
+    page.addAndMakeVisible (memStoreBtn);
+    memStoreBtn.onClick = [this]
+    {
+        memArmed = ! memArmed;
+        memStoreBtn.setToggleState (memArmed, juce::dontSendNotification);
+    };
+    for (int i = 0; i < 5; ++i)
+    {
+        memBtn[i].setButtonText (juce::String (i + 1));
+        memBtn[i].setColour (juce::TextButton::buttonColourId, neon::cyan);
+        page.addAndMakeVisible (memBtn[i]);
+        memBtn[i].onClick = [this, i]
+        {
+            if (memArmed) { storeScale (i); memArmed = false; memStoreBtn.setToggleState (false, juce::dontSendNotification); }
+            else          recallScale (i);
+        };
+    }
 
     // ---- microtonal keys: reset + transpose / octave beside them ----
     resetKeysBtn.setColour (juce::TextButton::buttonColourId, neon::magenta);
@@ -679,6 +759,7 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     kSatBass  = addKnob (mixer, P_satBass,  "LOW", 2, "", gd);
 
     tYam = addToggle (mixer, P_yamOn, "ACTIVE", cr);
+    kYamShine = addKnob (mixer, P_yamShine, "SHINE", 2, "", cr);
     kYamDrive = addKnob (mixer, P_yamDrive, "DRIVE",  2, "", cr);
     kYamMix   = addKnob (mixer, P_yamMix,   "AMOUNT", 2, "", cr);
     kYamWah   = addKnob (mixer, P_yamWah,   "WAH",    2, "", cr);
@@ -813,6 +894,23 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     mkFader (kMainLvl, tq);  mkFader (kDuoLvl, gd);  mkFader (kSatMix, gd);  mkFader (kYamMix, cr);  mkFader (kWahMix, pp);
     mkFader (kPhMix, lp);    mkFader (kDlLvl, tq);   mkFader (kRvLvl, cr);    mkFader (kMaster, pp);
 
+    // ---- voice edit page (Yamaha-style portamento / velocity / touch) ----
+    tPorta = addToggle (voiceEd, P_portaOn, "MAGIC LEGATO", cr);
+    tMagic = addToggle (page, P_portaOn, "MAGIC LEGATO", cr);
+    vk[0] = addKnob (voiceEd, P_magicTime, "TIME",       0, "",   tq);
+    vk[1] = addKnob (voiceEd, P_fastThr,  "THRESHOLD",   0, "",   tq);
+    vk[2] = addKnob (voiceEd, P_fastTime, "FAST TIME",   0, "",   tq);
+    vk[3] = addKnob (voiceEd, P_vSens,    "VEL SENS",    0, "",   gd);
+    vk[4] = addKnob (voiceEd, P_vRef,     "REF VELOCITY", 0, "",  gd);
+    vk[5] = addKnob (voiceEd, P_minTime,  "MIN TIME",    0, "",   gd);
+    vk[6] = addKnob (voiceEd, P_velLo,    "LOW",         0, "",   pp);
+    vk[7] = addKnob (voiceEd, P_velHi,    "HIGH",        0, "",   pp);
+    vk[8] = addKnob (voiceEd, P_tDepth,   "DEPTH",       0, "",   cr);
+    vk[9] = addKnob (voiceEd, P_tOff,     "OFFSET",      0, "",   cr);
+    voiceButton.setColour (juce::TextButton::buttonColourId, pp);
+    addAndMakeVisible (voiceButton);
+    voiceButton.onClick = [this] { showView (view == 4 ? 0 : 4); };
+
     // ---- browse page ----
     searchBox.setTextToShowWhenEmpty ("search by name...", neon::dim);
     searchBox.setColour (juce::TextEditor::backgroundColourId, juce::Colour (0xff070c16));
@@ -945,6 +1043,23 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
         g.drawText ("* = main    + = duo    (double-click = load)", 312, 566, 430, 14, juce::Justification::centredLeft, false);
     };
 
+    voiceEd.onPaint = [this] (juce::Graphics& g)
+    {
+        g.drawImageAt (bgImage, -voiceEd.getX(), -voiceEd.getY());
+        drawPanel (g, vePorta, "MAGIC LEGATO  (portamento)", neon::cyan);
+        drawPanel (g, veVel,   "VELOCITY TO PORTAMENTO TIME", neon::amber);
+        drawPanel (g, veLimit, "VELOCITY LIMIT", neon::green);
+        drawPanel (g, veTouch, "TOUCH SENSITIVITY", neon::magenta);
+        g.setFont (uiFont (10.5f, false));
+        g.setColour (neon::dim);
+        g.drawText ("These settings work only while MAGIC LEGATO is ON (it replaces GLIDE).  TIME = glide between notes.  THRESHOLD / FAST TIME = quicker glide when notes are played fast.",
+                    vePorta.getX() + 14, vePorta.getBottom() - 20, 940, 14, juce::Justification::centredLeft, false);
+        g.drawText ("Higher velocity = shorter glide (SENS = amount, REF = neutral velocity). MIN TIME = shortest glide.",
+                    veVel.getX() + 14, veVel.getBottom() - 20, 940, 14, juce::Justification::centredLeft, false);
+        g.drawText ("Incoming velocity is kept between LOW and HIGH.", veLimit.getX() + 14, veLimit.getBottom() - 20, 440, 14, juce::Justification::centredLeft, false);
+        g.drawText ("DEPTH = response curve, OFFSET = overall touch level (64 = neutral).", veTouch.getX() + 14, veTouch.getBottom() - 20, 440, 14, juce::Justification::centredLeft, false);
+    };
+
     mixer.onPaint = [this] (juce::Graphics& g)
     {
         g.drawImageAt (bgImage, -mixer.getX(), -mixer.getY());
@@ -1016,7 +1131,7 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
         }
 
         drawPanel (g, pVoice, "VOICE", neon::cyan);
-        drawPanel (g, pMaqam, "MICROTONAL KEYS", neon::amber);
+        drawPanel (g, pMaqam, "SCALE TUNE SETTING", neon::amber);
         drawPanel (g, pPerf, "PLAYING", neon::green);
         drawPanel (g, pArp, "ARPEGGIATOR", neon::amber);
         drawPanel (g, pWheels, "WHEELS", neon::cyan);
@@ -1044,6 +1159,8 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
         g.setFont (uiFont (10.5f, false));
         g.drawText ("Altered notes light up red.  Click = quarter-tone on/off.  Drag = fine tune.",
                     pMaqam.getX() + 330, pMaqam.getY() + 6, 630, 14, juce::Justification::centredRight, false);
+        g.setFont (uiFont (9.5f));
+        g.drawText ("SCALE TUNE MEMORY: MEMORY then 1-5 = store, 1-5 = recall", pMaqam.getX() + 776, pMaqam.getY() + 130, 190, 12, juce::Justification::centred, false);
     };
 
     // ---------------- settings page painting ----------------
@@ -1184,6 +1301,20 @@ void NayAudioProcessorEditor::mouseDown (const juce::MouseEvent& e)
 
 void NayAudioProcessorEditor::timerCallback()
 {
+    {   // MAGIC LEGATO takes over: the plain GLIDE knob, MONO and LEGATO switches are locked while it is on
+        const bool magic = proc.apvts.getRawParameterValue ("portaOn")->load() > 0.5f;
+        if (kGlide != nullptr && tMono != nullptr && tLegato != nullptr && kGlide->slider.isEnabled() == magic)
+        {
+            kGlide->slider.setEnabled (! magic);
+            tMono->setEnabled (! magic);
+            tLegato->setEnabled (! magic);
+            const float a = magic ? 0.35f : 1.0f;
+            kGlide->slider.setAlpha (a);
+            kGlide->label.setAlpha (a);
+            tMono->setAlpha (a);
+            tLegato->setAlpha (a);
+        }
+    }
     {
         int cc, tgt, cnt;
         proc.getLearnDone (cc, tgt, cnt);
@@ -1333,6 +1464,9 @@ void NayAudioProcessorEditor::showView (int v)
     page.setVisible (v == 0);
     browse.setVisible (v == 1);
     mixer.setVisible (v == 2);
+    voiceEd.setVisible (v == 4);
+    voiceButton.setToggleState (v == 4, juce::dontSendNotification);
+    voiceButton.setButtonText (v == 4 ? "BACK" : "VOICE");
     settings.setVisible (v == 3);
     browseButton.setToggleState (v == 1, juce::dontSendNotification);
     mixerButton.setToggleState (v == 2, juce::dontSendNotification);
@@ -1797,11 +1931,22 @@ void NayAudioProcessorEditor::resized()
     mapButton.setBounds (872, 16, 142, 32);
     browseButton.setBounds (640, 16, 110, 32);
     mixerButton.setBounds (756, 16, 110, 32);
+    voiceButton.setBounds (524, 16, 110, 32);
     midiRect = { 46, 674, 968, 24 };
     pageRect = { 46, 76, 968, 592 };
     page.setBounds (pageRect);
     settings.setBounds (pageRect);
     browse.setBounds (pageRect);
+    voiceEd.setBounds (pageRect);
+    vePorta = { 0, 0, 968, 150 };
+    veVel   = { 0, 162, 968, 150 };
+    veLimit = { 0, 324, 476, 150 };
+    veTouch = { 492, 324, 476, 150 };
+    tPorta->setBounds (vePorta.getX() + 16, vePorta.getY() + 54, 160, 26);
+    layoutRow ({ 200, vePorta.getY() + 26, 600, 100 }, { vk[0], vk[1], vk[2] });
+    layoutRow ({ 200, veVel.getY() + 26, 600, 100 }, { vk[3], vk[4], vk[5] });
+    layoutRow ({ veLimit.getX() + 60, veLimit.getY() + 26, 360, 100 }, { vk[6], vk[7] });
+    layoutRow ({ veTouch.getX() + 60, veTouch.getY() + 26, 360, 100 }, { vk[8], vk[9] });
     mixer.setBounds (pageRect);
 
     // ================= main page (local coords) =================
@@ -1814,19 +1959,25 @@ void NayAudioProcessorEditor::resized()
 
     pVoice = { 0, 68, 968, 128 };
     layoutRow ({ 10, pVoice.getY() + 22, 600, 100 }, { kGain, kAtk, kRel, kVibD, kVibR, kGlide });
-    tMono->setBounds (748, pVoice.getY() + 22, 150, 24);
-    tLegato->setBounds (748, pVoice.getY() + 48, 150, 24);
-    tVel->setBounds (748, pVoice.getY() + 74, 150, 24);
+    tMono->setBounds (748, pVoice.getY() + 20, 100, 24);
+    tLegato->setBounds (856, pVoice.getY() + 20, 104, 24);
+    tVel->setBounds (748, pVoice.getY() + 46, 212, 24);
+    tMagic->setBounds (748, pVoice.getY() + 76, 212, 34);
 
     pMaqam = { 0, 204, 968, 150 };
     trBox.setBounds (pMaqam.getX() + 14, pMaqam.getY() + 46, 108, 34);
     ocBox.setBounds (pMaqam.getX() + 130, pMaqam.getY() + 46, 108, 34);
     resetKeysBtn.setBounds (pMaqam.getX() + 14, pMaqam.getY() + 100, 224, 36);
     static const float px[12] = { 0, 0.5f, 1, 1.5f, 2, 3, 3.5f, 4, 4.5f, 5, 5.5f, 6 };
+    maqamBox.setBounds (pMaqam.getX() + 776, pMaqam.getY() + 28, 184, 28);
+    memStoreBtn.setBounds (pMaqam.getX() + 776, pMaqam.getY() + 64, 60, 28);
+    for (int i = 0; i < 5; ++i)
+        memBtn[i].setBounds (pMaqam.getX() + 840 + i * 24, pMaqam.getY() + 64, 22, 28);
+    tBypass->setBounds (pMaqam.getX() + 776, pMaqam.getY() + 100, 184, 26);
     for (int i = 0; i < 12; ++i)
     {
         const bool sharp = i == 1 || i == 3 || i == 6 || i == 8 || i == 10;
-        keys[(size_t) i]->setBounds (250 + (int) (px[i] * 100.0f) + 15, pMaqam.getY() + (sharp ? 20 : 84), 70, 62);
+        keys[(size_t) i]->setBounds (250 + (int) (px[i] * 72.0f), pMaqam.getY() + (sharp ? 20 : 84), 62, 62);
     }
 
     // ================= settings page (local coords) =================
@@ -1888,9 +2039,10 @@ void NayAudioProcessorEditor::resized()
     layoutRow ({ mixStrip[2].getX() + 14, 428, sw - 28, 68 }, { kSatTone });
     layoutRow ({ mixStrip[2].getX() + 14, 498, sw - 28, 68 }, { kSatBass });
     placeTog (tYam, 3);      placeFader (kYamMix, 3);
-    layoutRow ({ mixStrip[3].getX() + 14, 358, sw - 28, 68 }, { kYamDrive });
-    layoutRow ({ mixStrip[3].getX() + 14, 428, sw - 28, 68 }, { kYamWah });
-    layoutRow ({ mixStrip[3].getX() + 14, 498, sw - 28, 68 }, { kYamTone });
+    layoutRow ({ mixStrip[3].getX() + 14, 356, sw - 28, 52 }, { kYamDrive });
+    layoutRow ({ mixStrip[3].getX() + 14, 408, sw - 28, 52 }, { kYamWah });
+    layoutRow ({ mixStrip[3].getX() + 14, 460, sw - 28, 52 }, { kYamTone });
+    layoutRow ({ mixStrip[3].getX() + 14, 512, sw - 28, 52 }, { kYamShine });
     placeTog (tWah, 4);      placeFader (kWahMix, 4);  placeKnob (kWahPos, 4, 0);
     placeTog (tPh, 5);       placeFader (kPhMix, 5);   placeKnob (kPhRate, 5, 0); placeKnob (kPhDepth, 5, 1);
     placeFader (kDlLvl, 6);  placeKnob (kDlTime, 6, 0); placeKnob (kDlFb, 6, 1);

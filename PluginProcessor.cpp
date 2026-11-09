@@ -19,7 +19,8 @@ const char* const NayAudioProcessor::paramIds[P_count] =
     "velOn",
     "arpOn", "arpMode", "arpRate", "arpOct", "arpGate", "arpHold",
     "transpose", "octave",
-    "mainLevel", "mainPan", "mainMute", "duoLevel", "duoPan", "duoMute", "master", "varOn", "satTone", "satBass", "yamOn", "yamMix", "yamDrive", "yamWah", "yamTone"
+    "mainLevel", "mainPan", "mainMute", "duoLevel", "duoPan", "duoMute", "master", "varOn", "satTone", "satBass", "yamOn", "yamMix", "yamDrive", "yamWah", "yamTone",
+    "tuneBypass", "yamShine", "portaOn", "fastThr", "fastTime", "vSens", "vRef", "minTime", "velLo", "velHi", "tDepth", "tOff", "magicTime"
 };
 
 //==============================================================================
@@ -92,6 +93,19 @@ juce::AudioProcessorValueTreeState::ParameterLayout NayAudioProcessor::createLay
     l.add (std::make_unique<F> (id (P_yamDrive), "YAMAHA Drive", R (0.f, 1.f, 0.001f), 0.3f));
     l.add (std::make_unique<F> (id (P_yamWah),   "YAMAHA Wah", R (0.f, 1.f, 0.001f), 0.4f));
     l.add (std::make_unique<F> (id (P_yamTone),  "YAMAHA Tone", R (0.f, 1.f, 0.001f), 0.5f));
+    l.add (std::make_unique<B> (id (P_tuneBypass), "Scale Tune Bypass", false));
+    l.add (std::make_unique<F> (id (P_yamShine),   "YAMAHA Shine", R (0.f, 1.f, 0.001f), 0.5f));
+    l.add (std::make_unique<B> (id (P_portaOn),    "Magic Legato", false));
+    l.add (std::make_unique<F> (id (P_fastThr),    "Fast Portamento Threshold", R (0.f, 127.f, 1.f), 10.f));
+    l.add (std::make_unique<F> (id (P_fastTime),   "Fast Portamento Time", R (0.f, 127.f, 1.f), 7.f));
+    l.add (std::make_unique<F> (id (P_vSens),      "Velocity to Portamento Sens", R (0.f, 127.f, 1.f), 26.f));
+    l.add (std::make_unique<F> (id (P_vRef),       "Reference Velocity", R (1.f, 127.f, 1.f), 70.f));
+    l.add (std::make_unique<F> (id (P_minTime),    "Min Portamento Time", R (0.f, 127.f, 1.f), 6.f));
+    l.add (std::make_unique<F> (id (P_velLo),      "Velocity Limit Low", R (1.f, 127.f, 1.f), 1.f));
+    l.add (std::make_unique<F> (id (P_velHi),      "Velocity Limit High", R (1.f, 127.f, 1.f), 127.f));
+    l.add (std::make_unique<F> (id (P_tDepth),     "Touch Depth", R (0.f, 127.f, 1.f), 127.f));
+    l.add (std::make_unique<F> (id (P_tOff),       "Touch Offset", R (0.f, 127.f, 1.f), 70.f));
+    l.add (std::make_unique<F> (id (P_magicTime),  "Magic Legato Time", R (0.f, 127.f, 1.f), 0.f));
 
 
     for (int i = 0; i < 12; ++i)
@@ -152,7 +166,7 @@ void NayAudioProcessor::prepareToPlay (double sampleRate, int)
         yamLev[c2] = yamHpS[c2] = yamDcX[c2] = yamDcY[c2] = yamEnvIn[c2] = yamEnvOut[c2] = 0.f;
         yamG[c2] = 1.0f;
     }
-    for (auto* b : { &yamWah, &yamLo, &yamHi, &yamDLo, &yamLpf })
+    for (auto* b : { &yamWah, &yamLo, &yamHi, &yamDLo, &yamLpf, &yamPres })
         for (int c2 = 0; c2 < 2; ++c2) { b->z1[c2] = 0.f; b->z2[c2] = 0.f; }
 
     reverb.setSampleRate (sampleRate);
@@ -593,6 +607,7 @@ void NayAudioProcessor::startVoice (NayVoice& v, int note, int vel,
     v.pitch = v.target;
     v.detune = 0.0f;
     v.vibPhase = 0.0;
+    v.glideMs = -1.0f;
     applyVelocity (v, vel);
     v.gate = true;
     v.age = ++ageCounter;
@@ -616,8 +631,18 @@ void NayAudioProcessor::handleMidi (const juce::MidiMessage& msg,
     if (msg.isNoteOn())
     {
         const int n = msg.getNoteNumber();
-        const int vel = juce::jlimit (1, 127, (int) msg.getVelocity());
+        int vel = juce::jlimit (1, 127, (int) msg.getVelocity());
+        if (getP (P_portaOn) > 0.5f)
+        {   // MAGIC LEGATO / Voice Edit: touch sensitivity (depth / offset) then velocity limit
+            const float depth = getP (P_tDepth) / 127.0f;
+            vel = juce::jlimit (1, 127, (int) std::round (getP (P_tOff) + (float) (vel - 64) * depth));
+            const int lo = (int) getP (P_velLo), hi = juce::jmax (lo, (int) getP (P_velHi));
+            vel = juce::jlimit (lo, hi, vel);
+        }
         heldVel[n] = vel;
+        const double nowMs = juce::Time::getMillisecondCounterHiRes();
+        const double gapMs = nowMs - lastNoteOnMs;
+        lastNoteOnMs = nowMs;
 
         if (pMono)
         {
@@ -631,6 +656,17 @@ void NayAudioProcessor::handleMidi (const juce::MidiMessage& msg,
                 // legato: no retrigger, just glide
                 v.note = n;
                 v.target = noteTarget (n);
+                if (getP (P_portaOn) > 0.5f)
+                {   // MAGIC LEGATO portamento time: base -> fast playing -> velocity -> minimum
+                    auto ms = [] (float t) { const float x = t / 127.0f; return 500.0f * x * x; };
+                    float t = ms (getP (P_magicTime));
+                    if (gapMs < (double) getP (P_fastThr) * 8.0)
+                        t = ms (getP (P_fastTime));
+                    t *= std::exp (-((float) vel - getP (P_vRef)) / 127.0f * (getP (P_vSens) / 127.0f) * 4.0f);
+                    v.glideMs = juce::jmax (t, ms (getP (P_minTime)));
+                }
+                else
+                    v.glideMs = -1.0f;
                 applyVelocity (v, vel);
                 v.gate = true;
             }
@@ -748,7 +784,7 @@ void NayAudioProcessor::renderVoice (NayVoice& v, juce::AudioBuffer<float>& buf,
     float* L = buf.getWritePointer (0, start);
     float* R = buf.getNumChannels() > 1 ? buf.getWritePointer (1, start) : nullptr;
 
-    const float gt = pGlide;
+    const float gt = getP (P_portaOn) > 0.5f ? juce::jmax (0.0f, v.glideMs) : pGlide;   // MAGIC LEGATO replaces the GLIDE knob
     const double glideCoef = gt < 1.0f ? 1.0 : 1.0 - std::exp (-1.0 / ((double) gt * 0.001 * sr));
     const double depthCents = juce::jmin (100.0, (double) pVibDepth * (double) modWheel);   // vibrato only through the mod wheel; VIB DEPTH = amount at full wheel
     const double bendSemis = (double) bendNorm * (double) pPbRange;
@@ -920,9 +956,11 @@ void NayAudioProcessor::processYamaha (juce::AudioBuffer<float>& buffer)
 
     yamWah.bandpass (fs, wahHz, 2.3f);
     yamLo.lowShelf (fs, 225.0f, -7.0f);
-    yamHi.highShelf (fs, 2800.0f, hiDb);
     yamDLo.lowShelf (fs, 250.0f, 5.0f);
-    yamLpf.lowpass (fs, juce::jmin (3600.0f, 0.45f * fs), 0.707f);
+    const float shine = getP (P_yamShine);                                  // 0.5 = organ setting, up = brighter
+    yamHi.highShelf (fs, 2800.0f, hiDb + 24.0f * (shine - 0.5f) * 0.6f);
+    yamPres.peaking (fs, 3200.0f, 0.9f, 12.0f * shine);
+    yamLpf.lowpass (fs, juce::jmin (3600.0f + 9000.0f * shine * shine, 0.45f * fs), 0.707f);
 
     const float pre = 1.0f + 14.0f * drive;
     const float aHp   = 1.0f - std::exp (-twoPi * 60.0f / fs);
@@ -955,6 +993,7 @@ void NayAudioProcessor::processYamaha (juce::AudioBuffer<float>& buffer)
 
             y = yamLo.tick (ch, y);
             y = yamHi.tick (ch, y);
+            y = yamPres.tick (ch, y);
             y = yamDLo.tick (ch, y);
             y = yamLpf.tick (ch, y);
 
@@ -1252,6 +1291,7 @@ void NayAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     pVibRate   = getP (P_vibRate);
     pMono      = getP (P_mono) > 0.5f;
     pLegato    = getP (P_legato) > 0.5f;
+    if (getP (P_portaOn) > 0.5f) { pMono = true; pLegato = true; }   // MAGIC LEGATO forces mono + legato
     pDelayTime = getP (P_delayTime);
     pDelayFb   = getP (P_delayFb);
     pDelayLvl  = getP (P_delayLevel);
@@ -1267,7 +1307,7 @@ void NayAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
 
     // fine-tune per note (the microtonal keys)
     for (int i = 0; i < 12; ++i)
-        off[i] = offRaw[i]->load();
+        off[i] = getP (P_tuneBypass) > 0.5f ? 0.0f : offRaw[i]->load();
 
     // mixer: main / duo level, pan and mute (center = unity gain), master level
     {

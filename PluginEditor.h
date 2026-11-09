@@ -180,9 +180,9 @@ private:
     NeonLookAndFeel laf;
     bool built = false;
 
-    Page page, settings, browse, mixer;       // main / settings (folders, mapping) / browse / mixer
+    Page page, settings, browse, mixer, voiceEd;       // main / settings (folders, mapping) / browse / mixer
     MapView mapView;
-    juce::TextButton mapButton { "SETTINGS" }, browseButton { "BROWSE" }, mixerButton { "MIXER" };
+    juce::TextButton mapButton { "SETTINGS" }, browseButton { "BROWSE" }, mixerButton { "MIXER" }, voiceButton { "VOICE" };
     int view = 0;
 
     // ---- browse page ----
@@ -200,15 +200,17 @@ private:
     Knob *kMainLvl {}, *kMainPan {}, *kDuoLvl {}, *kDuoPan {}, *kMaster {};
     juce::Rectangle<int> pMixMain, pMixDuo, pMixMaster;
     juce::Rectangle<int> mixStrip[9];
+    Knob* vk[10] {};
+    juce::Rectangle<int> vePorta, veVel, veLimit, veTouch;
 
     std::vector<std::unique_ptr<Knob>> knobs;
     Knob *kGain {}, *kAtk {}, *kRel {}, *kGlide {}, *kVibD {}, *kVibR {}, *kPb {},
-         *kSatDrive {}, *kSatMix {}, *kSatTone {}, *kSatBass {}, *kYamDrive {}, *kYamMix {}, *kYamWah {}, *kYamTone {}, *kWahPos {}, *kWahMix {},
+         *kSatDrive {}, *kSatMix {}, *kSatTone {}, *kSatBass {}, *kYamDrive {}, *kYamMix {}, *kYamWah {}, *kYamTone {}, *kYamShine {}, *kWahPos {}, *kWahMix {},
          *kArpOct {}, *kArpGate {}, *kPhRate {}, *kPhDepth {}, *kPhMix {}, *kDlTime {}, *kDlFb {}, *kDlLvl {}, *kRvSize {}, *kRvLvl {};
 
     std::vector<std::unique_ptr<juce::ToggleButton>> toggles;
     std::vector<std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>> toggleAtts;
-    juce::ToggleButton *tMono {}, *tLegato {}, *tVel {}, *tArp {}, *tArpHold {}, *tSat {}, *tYam {}, *tWah {}, *tPh {}, *tVar {};
+    juce::ToggleButton *tMono {}, *tLegato {}, *tVel {}, *tArp {}, *tArpHold {}, *tSat {}, *tYam {}, *tBypass {}, *tPorta {}, *tMagic {}, *tWah {}, *tPh {}, *tVar {};
 
     juce::ComboBox arpModeBox, arpRateBox;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> arpModeAtt, arpRateAtt;
@@ -221,6 +223,12 @@ private:
     juce::ShapeButton nextA2 { "nextA2", neon::cyan, neon::cyan.brighter (0.4f), neon::cyan.darker (0.3f) };
     juce::TextButton renameButton { "RENAME" };
     juce::TextButton resetKeysBtn { "RESET KEYS" };
+    juce::ComboBox maqamBox;
+    juce::TextButton memStoreBtn { "MEMORY" }, memBtn[5];
+    bool memArmed = false;
+    void applyMaqam (int idx);
+    void storeScale (int slot);
+    void recallScale (int slot);
     juce::ShapeButton prevD { "prevD", neon::amber, neon::amber.brighter (0.4f), neon::amber.darker (0.3f) };
     juce::ShapeButton nextD { "nextD", neon::amber, neon::amber.brighter (0.4f), neon::amber.darker (0.3f) };
     juce::TextButton addButton { "ADD FOLDER" };
