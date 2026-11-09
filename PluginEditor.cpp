@@ -675,8 +675,14 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     tSat = addToggle (mixer, P_satOn, "ACTIVE", gd);
     kSatDrive = addKnob (mixer, P_satDrive, "DRIVE",  2, "", gd);
     kSatMix   = addKnob (mixer, P_satMix,   "AMOUNT", 2, "", gd);
-    kSatTone  = addKnob (mixer, P_satTone,  "PRESENCE", 2, "", gd);
-    kSatBass  = addKnob (mixer, P_satBass,  "BASS", 2, "", gd);
+    kSatTone  = addKnob (mixer, P_satTone,  "MID", 2, "", gd);
+    kSatBass  = addKnob (mixer, P_satBass,  "LOW", 2, "", gd);
+
+    tYam = addToggle (mixer, P_yamOn, "ACTIVE", cr);
+    kYamDrive = addKnob (mixer, P_yamDrive, "DRIVE",  2, "", cr);
+    kYamMix   = addKnob (mixer, P_yamMix,   "AMOUNT", 2, "", cr);
+    kYamWah   = addKnob (mixer, P_yamWah,   "WAH",    2, "", cr);
+    kYamTone  = addKnob (mixer, P_yamTone,  "TONE",   2, "", cr);
 
 
     tWah = addToggle (mixer, P_wahOn, "ACTIVE", pp);
@@ -804,7 +810,7 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
         k->slider.setColour (juce::Slider::trackColourId, col);
         k->label.setVisible (false);
     };
-    mkFader (kMainLvl, tq);  mkFader (kDuoLvl, gd);  mkFader (kSatMix, gd);  mkFader (kWahMix, pp);
+    mkFader (kMainLvl, tq);  mkFader (kDuoLvl, gd);  mkFader (kSatMix, gd);  mkFader (kYamMix, cr);  mkFader (kWahMix, pp);
     mkFader (kPhMix, lp);    mkFader (kDlLvl, tq);   mkFader (kRvLvl, cr);    mkFader (kMaster, pp);
 
     // ---- browse page ----
@@ -943,9 +949,9 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
     {
         g.drawImageAt (bgImage, -mixer.getX(), -mixer.getY());
 
-        const char* titles[8] = { "MAIN", "DUO", "KRONOS", "WAH", "PHASER", "DELAY", "REVERB", "MASTER" };
-        const juce::Colour cols[8] = { neon::cyan, neon::amber, neon::amber, neon::green, neon::violet, neon::cyan, neon::magenta, neon::green };
-        for (int i = 0; i < 8; ++i)
+        const char* titles[9] = { "MAIN", "DUO", "KRONOS", "YAMAHA", "WAH", "PHASER", "DELAY", "REVERB", "MASTER" };
+        const juce::Colour cols[9] = { neon::cyan, neon::amber, neon::amber, neon::magenta, neon::green, neon::violet, neon::cyan, neon::magenta, neon::green };
+        for (int i = 0; i < 9; ++i)
             drawPanel (g, mixStrip[i], titles[i], cols[i]);
 
         const int a = proc.getActiveGroup(), d = proc.getDuoGroup();
@@ -956,22 +962,22 @@ NayAudioProcessorEditor::NayAudioProcessorEditor (NayAudioProcessor& p)
 
         // master level meter
         {
-            const auto& s = mixStrip[7];
+            const auto& s = mixStrip[8];
             for (int ch = 0; ch < 2; ++ch)
             {
                 const float lv = proc.getMeter (ch);
                 const float db = 20.0f * std::log10 (juce::jmax (1.0e-4f, lv));
                 const float fr = juce::jlimit (0.0f, 1.0f, (db + 60.0f) / 66.0f);
-                const float bx = (float) s.getX() + 88.0f + (float) ch * 11.0f, by = 80.0f, bh = 268.0f;
+                const float bx = (float) s.getX() + 85.0f + (float) ch * 9.0f, by = 80.0f, bh = 268.0f;
                 g.setColour (juce::Colour (0xff02050a));
-                g.fillRoundedRectangle (bx, by, 8.0f, bh, 3.0f);
+                g.fillRoundedRectangle (bx, by, 7.0f, bh, 3.0f);
                 const float fh2 = bh * fr;
                 juce::ColourGradient cg (juce::Colour (0xffff4a3a), 0.0f, by, neon::green, 0.0f, by + bh, false);
                 cg.addColour (0.2, neon::amber);
                 g.setGradientFill (cg);
-                g.fillRoundedRectangle (bx, by + bh - fh2, 8.0f, fh2, 3.0f);
+                g.fillRoundedRectangle (bx, by + bh - fh2, 7.0f, fh2, 3.0f);
                 g.setColour (juce::Colour (0xffb8863a));
-                g.drawRoundedRectangle (bx, by, 8.0f, bh, 3.0f, 1.0f);
+                g.drawRoundedRectangle (bx, by, 7.0f, bh, 3.0f, 1.0f);
             }
         }
 
@@ -1860,13 +1866,13 @@ void NayAudioProcessorEditor::resized()
     browseInfo.setBounds (754, 330, 214, 228);
 
     // ================= mixer page: 8 channel strips =================
-    const int sw = 117, sg = 4;
-    for (int i = 0; i < 8; ++i)
+    const int sw = 104, sg = 4;
+    for (int i = 0; i < 9; ++i)
         mixStrip[i] = { i * (sw + sg), 0, sw, 572 };
 
     auto placeFader = [&] (Knob* k, int i)
     {
-        const int fxp = i == 7 ? mixStrip[i].getX() + 6 : mixStrip[i].getX() + (sw - 76) / 2;
+        const int fxp = i == 8 ? mixStrip[i].getX() + 6 : mixStrip[i].getX() + (sw - 76) / 2;
         k->slider.setBounds (fxp, 68, 76, 292);
     };
     auto placeKnob = [&] (Knob* k, int i, int slot)
@@ -1881,9 +1887,13 @@ void NayAudioProcessorEditor::resized()
     layoutRow ({ mixStrip[2].getX() + 14, 358, sw - 28, 68 }, { kSatDrive });
     layoutRow ({ mixStrip[2].getX() + 14, 428, sw - 28, 68 }, { kSatTone });
     layoutRow ({ mixStrip[2].getX() + 14, 498, sw - 28, 68 }, { kSatBass });
-    placeTog (tWah, 3);      placeFader (kWahMix, 3);  placeKnob (kWahPos, 3, 0);
-    placeTog (tPh, 4);       placeFader (kPhMix, 4);   placeKnob (kPhRate, 4, 0); placeKnob (kPhDepth, 4, 1);
-    placeFader (kDlLvl, 5);  placeKnob (kDlTime, 5, 0); placeKnob (kDlFb, 5, 1);
-    placeFader (kRvLvl, 6);  placeKnob (kRvSize, 6, 0);
-    placeFader (kMaster, 7);
+    placeTog (tYam, 3);      placeFader (kYamMix, 3);
+    layoutRow ({ mixStrip[3].getX() + 14, 358, sw - 28, 68 }, { kYamDrive });
+    layoutRow ({ mixStrip[3].getX() + 14, 428, sw - 28, 68 }, { kYamWah });
+    layoutRow ({ mixStrip[3].getX() + 14, 498, sw - 28, 68 }, { kYamTone });
+    placeTog (tWah, 4);      placeFader (kWahMix, 4);  placeKnob (kWahPos, 4, 0);
+    placeTog (tPh, 5);       placeFader (kPhMix, 5);   placeKnob (kPhRate, 5, 0); placeKnob (kPhDepth, 5, 1);
+    placeFader (kDlLvl, 6);  placeKnob (kDlTime, 6, 0); placeKnob (kDlFb, 6, 1);
+    placeFader (kRvLvl, 7);  placeKnob (kRvSize, 7, 0);
+    placeFader (kMaster, 8);
 }

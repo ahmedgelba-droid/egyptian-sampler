@@ -19,7 +19,7 @@ const char* const NayAudioProcessor::paramIds[P_count] =
     "velOn",
     "arpOn", "arpMode", "arpRate", "arpOct", "arpGate", "arpHold",
     "transpose", "octave",
-    "mainLevel", "mainPan", "mainMute", "duoLevel", "duoPan", "duoMute", "master", "varOn", "satTone", "satBass"
+    "mainLevel", "mainPan", "mainMute", "duoLevel", "duoPan", "duoMute", "master", "varOn", "satTone", "satBass", "yamOn", "yamMix", "yamDrive", "yamWah", "yamTone"
 };
 
 //==============================================================================
@@ -53,8 +53,8 @@ juce::AudioProcessorValueTreeState::ParameterLayout NayAudioProcessor::createLay
 
 
     l.add (std::make_unique<B> (id (P_satOn),    "KRONOS On", false));
-    l.add (std::make_unique<F> (id (P_satDrive), "KRONOS Drive", R (0.f, 1.f, 0.001f), 0.75f));
-    l.add (std::make_unique<F> (id (P_satMix),   "KRONOS Amount", R (0.f, 1.f, 0.001f), 1.0f));
+    l.add (std::make_unique<F> (id (P_satDrive), "KRONOS Drive", R (0.f, 1.f, 0.001f), 0.3f));
+    l.add (std::make_unique<F> (id (P_satMix),   "KRONOS Amount", R (0.f, 1.f, 0.001f), 0.5f));
 
     l.add (std::make_unique<B> (id (P_wahOn),   "Wah On", false));
     l.add (std::make_unique<F> (id (P_wahPos),  "Wah Pedal", R (0.f, 1.f, 0.001f), 0.5f));
@@ -85,8 +85,13 @@ juce::AudioProcessorValueTreeState::ParameterLayout NayAudioProcessor::createLay
 
     l.add (std::make_unique<B> (id (P_velOn),   "Velocity On", true));
     l.add (std::make_unique<B> (id (P_varOn),   "Note Variation", true));
-    l.add (std::make_unique<F> (id (P_satTone), "KRONOS Presence", R (0.f, 1.f, 0.001f), 0.6f));
-    l.add (std::make_unique<F> (id (P_satBass), "KRONOS Bass", R (0.f, 1.f, 0.001f), 0.1f));
+    l.add (std::make_unique<F> (id (P_satTone), "KRONOS Mid", R (0.f, 1.f, 0.001f), 0.5f));
+    l.add (std::make_unique<F> (id (P_satBass), "KRONOS Low", R (0.f, 1.f, 0.001f), 0.33f));
+    l.add (std::make_unique<B> (id (P_yamOn),    "YAMAHA On", false));
+    l.add (std::make_unique<F> (id (P_yamMix),   "YAMAHA Amount", R (0.f, 1.f, 0.001f), 0.5f));
+    l.add (std::make_unique<F> (id (P_yamDrive), "YAMAHA Drive", R (0.f, 1.f, 0.001f), 0.3f));
+    l.add (std::make_unique<F> (id (P_yamWah),   "YAMAHA Wah", R (0.f, 1.f, 0.001f), 0.4f));
+    l.add (std::make_unique<F> (id (P_yamTone),  "YAMAHA Tone", R (0.f, 1.f, 0.001f), 0.5f));
 
 
     for (int i = 0; i < 12; ++i)
@@ -142,6 +147,13 @@ void NayAudioProcessor::prepareToPlay (double sampleRate, int)
     delayWrite = 0;
 
     satLo[0] = satLo[1] = satHi[0] = satHi[1] = 0.f;
+    for (int c2 = 0; c2 < 2; ++c2)
+    {
+        yamLev[c2] = yamHpS[c2] = yamDcX[c2] = yamDcY[c2] = yamEnvIn[c2] = yamEnvOut[c2] = 0.f;
+        yamG[c2] = 1.0f;
+    }
+    for (auto* b : { &yamWah, &yamLo, &yamHi, &yamDLo, &yamLpf })
+        for (int c2 = 0; c2 < 2; ++c2) { b->z1[c2] = 0.f; b->z2[c2] = 0.f; }
 
     reverb.setSampleRate (sampleRate);
     reverb.reset();
@@ -823,39 +835,27 @@ void NayAudioProcessor::processSaturation (juce::AudioBuffer<float>& buffer)
     if (! pSatOn)
         return;
 
-    // KRONOS = 4-band "Power Overdrive" (multiband tube-style saturation, like the Saturn preset the user showed):
-    // a leveller adds sustain, the signal is split at 250 Hz / 1.4 kHz / 4.5 kHz, every band gets its own soft
-    // tanh stage (drive per band: low 0.45, low-mid 1.0, high-mid 0.85, top 0.8), the bands are summed with a small
-    // tone balance, and the result is level-matched to the dry signal.
+    // KRONOS = the Yamaha PSR-A5000 insertion effect "Auto Wah + OD Hard" used for the electric-violin lead:
+    //   static auto-wah (LFO 0 Hz, resonance 2.9) -> overdrive (hard, low drive) -> Dist EQ (low +4 dB, mid +6 dB)
+    //   -> LPF 3.2 kHz -> insertion EQ (low shelf 560 Hz +3 dB) -> dry/wet ~50 %, level-matched to the dry signal.
+    // knobs: DRIVE = overdrive, MID = Dist EQ mid gain (0..+12 dB), BASS = Dist EQ low gain (0..+12 dB), AMOUNT = dry/wet.
     const float drive = pSatDrive, mix = pSatMix;
-    const float pTone = getP (P_satTone), pBass = getP (P_satBass);
+    const float midDb = 12.0f * getP (P_satTone), lowDb = 12.0f * getP (P_satBass);
     const float fs = (float) sr;
     const float twoPi = juce::MathConstants<float>::twoPi;
-    const float bias = 0.06f * drive;
-    const float tb = std::tanh (bias);
-    const float aHp   = 1.0f - std::exp (-twoPi * 300.0f / fs);
-    const float aTop  = 1.0f - std::exp (-twoPi * juce::jmin (4700.0f, 0.45f * fs) / fs);   // guitar cabinet roll-off
-    const float aBass = 1.0f - std::exp (-twoPi * 200.0f / fs);
+
+    satWahBp.bandpass (fs, 900.0f, 2.9f);
+    satDLow.lowShelf (fs, 250.0f, lowDb);
+    satDMid.peaking (fs, 1200.0f, 0.9f, midDb);
+    satLpf.lowpass (fs, juce::jmin (3200.0f, 0.45f * fs), 0.707f);
+    satInLow.lowShelf (fs, 560.0f, 3.0f);
+
+    const float pre = 1.0f + 18.0f * drive;
+    const float aHp   = 1.0f - std::exp (-twoPi * 70.0f / fs);
     const float aAtt  = 1.0f - std::exp (-1.0f / (0.004f * fs));
     const float aRel  = 1.0f - std::exp (-1.0f / (0.18f * fs));
     const float aEnv  = 1.0f - std::exp (-1.0f / (0.05f * fs));
     const float aGain = 1.0f - std::exp (-1.0f / (0.02f * fs));
-    const float sus = 0.3f * drive;
-    const float aShine = 1.0f - std::exp (-twoPi * 3968.0f / fs);
-
-    const float splitHz[3] = { 250.0f, 1400.0f, 4500.0f };
-    float ac[3];
-    for (int i = 0; i < 3; ++i)
-        ac[i] = 1.0f - std::exp (-twoPi * juce::jmin (splitHz[i], 0.45f * fs) / fs);
-
-    const float mult[4] = { 0.45f, 1.0f, 0.85f, 0.8f };
-    const float tone[4] = { 0.95f, 1.0f, 1.12f, 1.0f };
-    float kb[4], norm[4];
-    for (int b = 0; b < 4; ++b)
-    {
-        kb[b] = 1.0f + drive * 6.8f * mult[b];
-        norm[b] = tone[b] / kb[b];
-    }
 
     const int n = buffer.getNumSamples();
     const int chans = juce::jmin (buffer.getNumChannels(), 2);
@@ -871,37 +871,19 @@ void NayAudioProcessor::processSaturation (juce::AudioBuffer<float>& buffer)
             satHpS[ch] += aHp * (xd - satHpS[ch]);
             float x = xd - satHpS[ch];
 
-            const float ax = std::abs (x);
+            const float ax = std::abs (x);                   // gentle levelling so quiet notes drive the overdrive too
             satLev[ch] += (ax > satLev[ch] ? aAtt : aRel) * (ax - satLev[ch]);
-            x *= juce::jlimit (1.0f, 8.0f, std::pow (0.55f / (satLev[ch] + 1.0e-4f), sus));   // sustain
+            x *= juce::jlimit (1.0f, 8.0f, std::pow (0.3f / (satLev[ch] + 1.0e-4f), 0.6f));
 
-            // 4-band split (complementary, so the bands add back up to the input)
-            float rest = x, band[4];
-            for (int s2 = 0; s2 < 3; ++s2)
-            {
-                float& p1 = satXo[ch][s2][0];
-                float& p2 = satXo[ch][s2][1];
-                p1 += ac[s2] * (rest - p1);
-                p2 += ac[s2] * (p1 - p2);
-                band[s2] = p2;
-                rest -= p2;
-            }
-            band[3] = rest;
+            x = 0.5f * x + 1.3f * satWahBp.tick (ch, x);     // static auto-wah: resonant mid peak
 
-            float y = 0.0f;
-            for (int b = 0; b < 4; ++b)
-                y += (std::tanh (kb[b] * band[b] + bias) - tb) * norm[b];
-            y *= 1.6f;
-            satLo[ch] += aShine * (y - satLo[ch]);
-            y += (y - satLo[ch]) * (6.0f * pTone);          // PRESENCE: lead shine above 4 kHz
+            float y = pre * x;                               // overdrive "hard": tanh plus a little hard clipping
+            y = 0.6f * std::tanh (y) + 0.4f * juce::jlimit (-0.9f, 0.9f, y);
 
-            satHi[ch] += aBass * (y - satHi[ch]);            // amp BASS: warm low end
-            y += satHi[ch] * (0.8f * pBass);              // BASS: warm low end
-
-            satLp[ch] += aTop * (y - satLp[ch]);             // cabinet: 2-pole roll-off at 6.5 kHz
-            satLp2[ch] += aTop * (satLp[ch] - satLp2[ch]);
-            y = satLp2[ch] * 1.3f;
-            y = std::tanh (1.4f * y) * 0.75f;                // power-amp stage: gentle extra compression and glue
+            y = satDLow.tick (ch, y);
+            y = satDMid.tick (ch, y);
+            y = satLpf.tick (ch, y);
+            y = satInLow.tick (ch, y);
 
             const float hp = y - satDcX[ch] + 0.995f * satDcY[ch];
             satDcX[ch] = y;
@@ -917,6 +899,78 @@ void NayAudioProcessor::processSaturation (juce::AudioBuffer<float>& buffer)
 
             const float wet = hp * satG[ch];
             d[i] = xd + (wet - xd) * mix;
+        }
+    }
+}
+
+//==============================================================================
+// YAMAHA = PSR-A5000 "Legacy - Auto Wah + Overdrive 1": LFO 0 Hz / depth 0 (static wah), cutoff offset 40,
+// resonance 2.3, EQ low 225 Hz -7 dB, EQ high 2.8 kHz -12 dB, dry/wet D<W63, drive 10, Dist EQ low +5 / mid 0,
+// LPF 3.6 kHz. Dark and tight. Knobs: DRIVE, WAH (cutoff), TONE (high shelf cut), AMOUNT (dry/wet).
+void NayAudioProcessor::processYamaha (juce::AudioBuffer<float>& buffer)
+{
+    if (getP (P_yamOn) < 0.5f)
+        return;
+
+    const float fs = (float) sr;
+    const float twoPi = juce::MathConstants<float>::twoPi;
+    const float mix = getP (P_yamMix), drive = getP (P_yamDrive);
+    const float wahHz = 350.0f * std::pow (2.0f, 3.0f * getP (P_yamWah));   // 350 Hz .. 2.8 kHz
+    const float hiDb = -24.0f * getP (P_yamTone);                           // 0.5 -> -12 dB like the organ
+
+    yamWah.bandpass (fs, wahHz, 2.3f);
+    yamLo.lowShelf (fs, 225.0f, -7.0f);
+    yamHi.highShelf (fs, 2800.0f, hiDb);
+    yamDLo.lowShelf (fs, 250.0f, 5.0f);
+    yamLpf.lowpass (fs, juce::jmin (3600.0f, 0.45f * fs), 0.707f);
+
+    const float pre = 1.0f + 14.0f * drive;
+    const float aHp   = 1.0f - std::exp (-twoPi * 60.0f / fs);
+    const float aAtt  = 1.0f - std::exp (-1.0f / (0.004f * fs));
+    const float aRel  = 1.0f - std::exp (-1.0f / (0.18f * fs));
+    const float aEnv  = 1.0f - std::exp (-1.0f / (0.05f * fs));
+    const float aGain = 1.0f - std::exp (-1.0f / (0.02f * fs));
+
+    const int n = buffer.getNumSamples();
+    const int chans = juce::jmin (buffer.getNumChannels(), 2);
+
+    for (int ch = 0; ch < chans; ++ch)
+    {
+        float* d = buffer.getWritePointer (ch);
+
+        for (int i = 0; i < n; ++i)
+        {
+            const float xd = d[i];
+
+            yamHpS[ch] += aHp * (xd - yamHpS[ch]);
+            float x = xd - yamHpS[ch];
+
+            const float ax = std::abs (x);
+            yamLev[ch] += (ax > yamLev[ch] ? aAtt : aRel) * (ax - yamLev[ch]);
+            x *= juce::jlimit (1.0f, 6.0f, std::pow (0.3f / (yamLev[ch] + 1.0e-4f), 0.5f));
+
+            x = 0.4f * x + 1.2f * yamWah.tick (ch, x);
+
+            float y = std::tanh (pre * x);                   // overdrive 1: soft
+
+            y = yamLo.tick (ch, y);
+            y = yamHi.tick (ch, y);
+            y = yamDLo.tick (ch, y);
+            y = yamLpf.tick (ch, y);
+
+            const float hp = y - yamDcX[ch] + 0.995f * yamDcY[ch];
+            yamDcX[ch] = y;
+            yamDcY[ch] = hp;
+
+            yamEnvIn[ch]  += aEnv * (xd * xd - yamEnvIn[ch]);
+            yamEnvOut[ch] += aEnv * (hp * hp - yamEnvOut[ch]);
+            if (yamEnvIn[ch] > 1.0e-8f)
+            {
+                const float target = juce::jlimit (0.05f, 8.0f, std::sqrt (yamEnvIn[ch] / (yamEnvOut[ch] + 1.0e-9f)));
+                yamG[ch] += aGain * (target - yamG[ch]);
+            }
+
+            d[i] = xd + (hp * yamG[ch] - xd) * mix;
         }
     }
 }
@@ -1356,6 +1410,7 @@ void NayAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     clockPos += total;
 
     processSaturation (buffer);
+    processYamaha (buffer);
     processWah (buffer);
     processPhaser (buffer);
     processDelay (buffer);

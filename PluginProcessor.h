@@ -55,7 +55,58 @@ enum NayParam
     P_arpOn, P_arpMode, P_arpRate, P_arpOct, P_arpGate, P_arpHold,
     P_transpose, P_octave,
     P_mainLevel, P_mainPan, P_mainMute, P_duoLevel, P_duoPan, P_duoMute, P_master, P_varOn, P_satTone, P_satBass,
+    P_yamOn, P_yamMix, P_yamDrive, P_yamWah, P_yamTone,
     P_count
+};
+
+// small RBJ biquad used by KRONOS (A5000-style insertion effect)
+struct SatBq
+{
+    float b0 = 1, b1 = 0, b2 = 0, a1 = 0, a2 = 0;
+    float z1[2] { 0, 0 }, z2[2] { 0, 0 };
+
+    float tick (int ch, float x)
+    {
+        const float y = b0 * x + z1[ch];
+        z1[ch] = b1 * x - a1 * y + z2[ch];
+        z2[ch] = b2 * x - a2 * y;
+        return y;
+    }
+
+    void setNorm (float nb0, float nb1, float nb2, float na0, float na1, float na2)
+    {
+        b0 = nb0 / na0; b1 = nb1 / na0; b2 = nb2 / na0; a1 = na1 / na0; a2 = na2 / na0;
+    }
+
+    void lowpass (float fs, float f, float q)
+    {
+        const float w = 6.2831853f * f / fs, c = std::cos (w), al = std::sin (w) / (2.0f * q);
+        setNorm ((1 - c) * 0.5f, 1 - c, (1 - c) * 0.5f, 1 + al, -2 * c, 1 - al);
+    }
+    void bandpass (float fs, float f, float q)
+    {
+        const float w = 6.2831853f * f / fs, c = std::cos (w), al = std::sin (w) / (2.0f * q);
+        setNorm (al, 0, -al, 1 + al, -2 * c, 1 - al);
+    }
+    void peaking (float fs, float f, float q, float db)
+    {
+        const float A = std::pow (10.0f, db / 40.0f), w = 6.2831853f * f / fs, c = std::cos (w), al = std::sin (w) / (2.0f * q);
+        setNorm (1 + al * A, -2 * c, 1 - al * A, 1 + al / A, -2 * c, 1 - al / A);
+    }
+    void lowShelf (float fs, float f, float db)
+    {
+        const float A = std::pow (10.0f, db / 40.0f), w = 6.2831853f * f / fs, c = std::cos (w), s = std::sin (w);
+        const float beta = 2.0f * std::sqrt (A) * (s * 0.70710678f);
+        setNorm (A * ((A + 1) - (A - 1) * c + beta), 2 * A * ((A - 1) - (A + 1) * c), A * ((A + 1) - (A - 1) * c - beta),
+                 (A + 1) + (A - 1) * c + beta, -2 * ((A - 1) + (A + 1) * c), (A + 1) + (A - 1) * c - beta);
+    }
+    void highShelf (float fs, float f, float db)
+    {
+        const float A = std::pow (10.0f, db / 40.0f), w = 6.2831853f * f / fs, c = std::cos (w), s = std::sin (w);
+        const float beta = 2.0f * std::sqrt (A) * (s * 0.70710678f);
+        setNorm (A * ((A + 1) + (A - 1) * c + beta), -2 * A * ((A - 1) + (A + 1) * c), A * ((A + 1) + (A - 1) * c - beta),
+                 (A + 1) - (A - 1) * c + beta, 2 * ((A - 1) - (A + 1) * c), (A + 1) - (A - 1) * c - beta);
+    }
 };
 
 class NayAudioProcessor : public juce::AudioProcessor
@@ -170,6 +221,7 @@ private:
     void renderVoice (NayVoice&, juce::AudioBuffer<float>&, int start, int num);
     void renderAll (juce::AudioBuffer<float>&, int start, int num);
     void processSaturation (juce::AudioBuffer<float>&);
+    void processYamaha (juce::AudioBuffer<float>&);
     void processWah (juce::AudioBuffer<float>&);
     void processPhaser (juce::AudioBuffer<float>&);
     void runArp (const juce::MidiBuffer& in, juce::MidiBuffer& out, int numSamples, double bpm);
@@ -228,6 +280,7 @@ private:
     NaySample* lastPicked = nullptr;
     NaySample* lastPickedB = nullptr;
     float mixAL = 1.f, mixAR = 1.f, mixBL = 1.f, mixBR = 1.f, pMaster = 1.f;      // last sample used (compared only, never dereferenced)
+    SatBq satWahBp, satDLow, satDMid, satLpf, satInLow;   // KRONOS filters
     float satXo[2][3][2] {};              // KRONOS crossover states [channel][split][pole]
     std::atomic<float> meter[2] { 0.0f, 0.0f };
     int curShift = 0;                     // transpose+octave (mod 12): the microtonal key tuning moves with it
@@ -238,6 +291,8 @@ private:
     std::atomic<int> monKind { 0 }, monA { 0 }, monB { 0 }, monCount { 0 };
     juce::int64 clockPos = 0, curPos = 0;
     float satLev[2] {}, satHpS[2] {}, satLo[2] {}, satHi[2] {}, satLp2[2] {}, satEnvIn[2] {}, satEnvOut[2] {}, satG[2] { 1.0f, 1.0f };
+    SatBq yamWah, yamLo, yamHi, yamDLo, yamLpf;
+    float yamLev[2] {}, yamHpS[2] {}, yamDcX[2] {}, yamDcY[2] {}, yamEnvIn[2] {}, yamEnvOut[2] {}, yamG[2] { 1.0f, 1.0f };
 
     juce::AudioBuffer<float> delayBuf;
     int delayWrite = 0;
